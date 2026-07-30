@@ -174,9 +174,9 @@ def main():
     st.title("🛒 Bulk Listing Generator (Meesho + Flipkart)")
     st.caption("Template upload → Dynamic form (with dropdowns) → Bulk fill → Download")
 
-    uploaded = st.file_uploader("📁 Template upload karo (.xlsx)", type=["xlsx"])
+    uploaded = st.file_uploader("📁 Upload your template (.xlsx)", type=["xlsx"])
     if not uploaded:
-        st.info("👆 Meesho ya Flipkart ka blank template upload karo"); return
+        st.info("👆 Upload a blank Meesho or Flipkart template to get started"); return
 
     try:
         wb = load_workbook(uploaded, keep_vba=False)
@@ -219,12 +219,12 @@ def main():
             count = st.number_input("Listings count", 1, 5000, 50, 10)
         with c4:
             price_var = st.number_input("Price variation (±₹)", 0, 100, 0, 5,
-                help="0 = same price. 20 = har row ±₹20 random.")
+                help="0 = same price for all. 20 = each row varies ±₹20 randomly.")
         with c5:
             st.markdown("") # spacer
 
         st.markdown("### 📝 Template Fields")
-        st.markdown("*Dropdown wale fields mein Validation Sheet ki values dikhegi*")
+        st.markdown("*Fields with dropdowns will show values from the Validation Sheet*")
 
         fv = {}
         show = [f for f in fields if f not in AUTO_FIELDS
@@ -267,7 +267,7 @@ def main():
         if not category.strip(): errs.append("Product Category required")
         for f in fv:
             if f in compulsory and not str(fv[f]).strip():
-                errs.append(f"⭐ '{f}' required hai")
+                errs.append(f"⭐ '{f}' is required")
         if errs:
             for e in errs: st.error(e)
             return
@@ -308,7 +308,7 @@ def main():
         out = io.BytesIO()
         wb2.save(out); out.seek(0)
 
-        st.success(f"✅ {len(rows)} listings filled!")
+        st.success(f"✅ {len(rows)} listings generated and filled!")
         df = pd.DataFrame(rows)
         prev = ['Product Name', VARIATION_FIELD, 'SKU ID', 'Brand Name']
         st.dataframe(df[[c for c in prev if c in df.columns]].head(15),
