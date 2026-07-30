@@ -4,394 +4,321 @@ import io
 import re
 import random
 import string
-from typing import Optional
 from openpyxl import load_workbook
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-TITLE_PREFIXES = [
-    "Premium", "Classic", "Trendy", "Stylish", "Elegant",
-    "Comfortable", "Ethnic", "Designer", "Exclusive", "Traditional",
-    "Modern", "Beautiful", "Fancy", "Attractive", "Latest",
-    "New", "Fashionable", "Superior", "Printed", "Embroidered",
+SEO_ADJECTIVES = [
+    "Premium", "Stylish", "Trendy", "Designer", "Exclusive",
+    "Comfortable", "Beautiful", "Attractive", "Latest", "Fashionable",
+    "Traditional", "Modern", "Elegant", "Classic", "New Launched",
 ]
-
-# Fields to skip (system use — don't show in form)
+SEO_FEATURES = [
+    "Embroidered", "Printed", "Self Design", "Solid", "Woven",
+    "Block Print", "Bandhani", "Tie Dye", "Floral", "Checked",
+    "Striped", "Geometric", "Abstract", "Ethnic Motif", "Colorblocked",
+]
+SEO_OCCASIONS = [
+    "Ethnic Wear", "Party Wear", "Casual Wear", "Daily Wear",
+    "Festive Wear", "Wedding Wear", "Festival Collection",
+]
 SKIP_FIELDS = {'ERROR STATUS', 'ERROR MESSAGE'}
-
-# Fields that get auto-generated per row (random unique)
-AUTO_GENERATED_FIELDS = {'Product Name', 'SKU ID', 'Product ID / Style ID'}
-
-# The size/variation field
+AUTO_FIELDS = {'Product Name', 'SKU ID', 'Product ID / Style ID'}
 VARIATION_FIELD = 'Variation'
+PRICE_FIELDS = {'Meesho Price', 'Wrong/Defective Returns Price', 'Selling Price'}
 
 
-# ─── Template Parsing ─────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def parse_comma_separated(raw: str) -> list[str]:
-    seen = set()
-    result = []
+def parse_csv(raw):
+    seen, result = set(), []
     for item in raw.split(","):
-        trimmed = item.strip()
-        if trimmed and trimmed not in seen:
-            seen.add(trimmed)
-            result.append(trimmed)
+        t = item.strip()
+        if t and t not in seen:
+            seen.add(t); result.append(t)
     return result
 
-
 def find_data_sheet(wb):
-    """Find the 'Fill this' sheet."""
     for name in wb.sheetnames:
-        if 'fill' in name.lower():
-            return wb[name]
-    if len(wb.sheetnames) > 1:
-        return wb[wb.sheetnames[1]]
-    return wb[wb.sheetnames[0]]
-
+        if 'fill' in name.lower(): return wb[name]
+    return wb[wb.sheetnames[1]] if len(wb.sheetnames) > 1 else wb[wb.sheetnames[0]]
 
 def find_header_row(ws):
-    """Find the 'Fields + Description' row (contains field names in multiline cells)."""
-    for row_idx in range(1, min(10, ws.max_row + 1)):
-        cell_val = ws.cell(row=row_idx, column=1).value
-        if cell_val and 'Fields + Description' in str(cell_val):
-            return row_idx
-    # Fallback: look for multiline cell with 'Product Name' + description
-    for row_idx in range(1, min(10, ws.max_row + 1)):
-        for col_idx in range(1, min(60, ws.max_column + 1)):
-            cell_val = ws.cell(row=row_idx, column=col_idx).value
-            if cell_val:
-                val = str(cell_val)
-                if 'Product Name' in val and len(val) > 30:
-                    return row_idx
-    # Fallback: row after "Field Names"
-    for row_idx in range(1, min(10, ws.max_row + 1)):
-        cell_val = ws.cell(row=row_idx, column=1).value
-        if cell_val and 'Field Names' == str(cell_val).strip():
-            return row_idx + 1
+    for r in range(1, 10):
+        v = ws.cell(row=r, column=1).value
+        if v and 'Fields + Description' in str(v): return r
+    for r in range(1, 10):
+        for c in range(1, 60):
+            v = ws.cell(row=r, column=c).value
+            if v and 'Product Name' in str(v) and len(str(v)) > 30: return r
+    for r in range(1, 10):
+        v = ws.cell(row=r, column=1).value
+        if v and str(v).strip() == 'Field Names': return r + 1
     return 3
 
-
-def find_data_start_row(ws, header_row: int) -> int:
-    """Find where data rows start (after header + tutorial/description rows)."""
-    start = header_row + 1
-    for row_idx in range(header_row + 1, header_row + 5):
+def find_data_start(ws, hdr):
+    start = hdr + 1
+    for r in range(hdr+1, hdr+5):
         skip = False
-        for col_idx in range(1, min(10, ws.max_column + 1)):
-            cell_val = ws.cell(row=row_idx, column=col_idx).value
-            if cell_val:
-                val = str(cell_val)
-                if ('Tutorial' in val or 'Watch' in val or
-                    'Validation Sheet' in val or len(val) > 200):
-                    skip = True
-                    break
-        if skip:
-            start = row_idx + 1
-        else:
-            break
+        for c in range(1, 10):
+            v = ws.cell(row=r, column=c).value
+            if v and ('Tutorial' in str(v) or 'Watch' in str(v) or
+                      'Validation Sheet' in str(v) or len(str(v)) > 200):
+                skip = True; break
+        if skip: start = r + 1
+        else: break
     return start
 
-
-def get_column_mapping(ws, header_row: int) -> dict:
-    """Extract field names from multiline header cells.
-    
-    Cells look like: '\\n\\nProduct Name\\n\\nPlease enter the product name...'
-    We extract the first non-empty line as the field name.
-    """
-    col_map = {}
-    for col_idx in range(1, ws.max_column + 1):
-        cell_val = ws.cell(row=header_row, column=col_idx).value
-        if cell_val:
-            lines = str(cell_val).split('\n')
-            field_name = None
-            for line in lines:
-                stripped = line.strip()
-                if stripped and stripped not in (
-                    'Fields + Description:',
-                    'Field Names',
-                    'Field Type (Compulsory, Recommended, System_Use) ->',
-                ):
-                    field_name = stripped
-                    break
-            if field_name:
-                col_map[field_name] = col_idx
-    return col_map
+def get_col_map(ws, hdr):
+    m = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(row=hdr, column=c).value
+        if v:
+            for line in str(v).split('\n'):
+                s = line.strip()
+                if s and s not in ('Fields + Description:', 'Field Names',
+                    'Field Type (Compulsory, Recommended, System_Use) ->'):
+                    m[s] = c; break
+    return m
 
 
-def get_compulsory_fields(ws, header_row: int, col_map: dict) -> set:
-    """Detect which fields are compulsory from the '* Compulsory Field' markers.
-    
-    Meesho template has a row ABOVE the Fields+Description row (usually header_row - 1)
-    that contains '* Compulsory Field' or 'Optional Field' for each column.
-    """
-    compulsory = set()
-    # The markers row is typically 1 row above header_row
-    # But could also be 2 rows above — check both
-    for marker_row in [header_row - 1, header_row - 2]:
-        if marker_row < 1:
-            continue
-        found_any = False
-        for field_name, col_idx in col_map.items():
-            cell_val = ws.cell(row=marker_row, column=col_idx).value
-            if cell_val:
-                val = str(cell_val).strip()
-                if 'Compulsory' in val:
-                    compulsory.add(field_name)
-                    found_any = True
-        if found_any:
-            break
+def get_compulsory(ws, hdr, col_map):
+    comp = set()
+    for mr in [hdr-1, hdr-2]:
+        if mr < 1: continue
+        found = False
+        for fn, ci in col_map.items():
+            v = ws.cell(row=mr, column=ci).value
+            if v and 'Compulsory' in str(v):
+                comp.add(fn); found = True
+        if found: break
+    return comp
 
-    return compulsory
+def get_dropdowns(wb, col_map):
+    """Read validation sheet dropdown options."""
+    dd = {}
+    vs = None
+    for name in wb.sheetnames:
+        if 'validation' in name.lower(): vs = wb[name]; break
+    if not vs: return dd
 
+    # Find header row in validation sheet
+    vhr = 1
+    for r in range(1, 5):
+        v = vs.cell(row=r, column=1).value
+        if v and ('Field Type' in str(v) or 'Field Names' in str(v)):
+            vhr = r; break
 
-# ─── Random Generators ────────────────────────────────────────────────────────
+    # Map columns
+    vcm = {}
+    for c in range(1, vs.max_column + 1):
+        v = vs.cell(row=vhr, column=c).value
+        if v and str(v).strip() in col_map:
+            vcm[str(v).strip()] = c
 
-def generate_random_sku(base_code: str, index: int) -> str:
-    rnd = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    return f"{base_code}_{rnd}{index + 1}"
+    # Data rows start after descriptions
+    ds = vhr + 1
+    chk = vs.cell(row=ds, column=1).value
+    if chk and 'Field Names' in str(chk): ds += 1
 
-
-def generate_random_style_code(base_code: str, index: int) -> str:
-    rnd = ''.join(random.choices(string.ascii_uppercase + string.digits, k=3))
-    return f"{base_code}-{rnd}{index + 1}"
-
-
-def generate_random_title(brand: str, category: str, color: str) -> str:
-    prefix = random.choice(TITLE_PREFIXES)
-    templates = [
-        f"{brand} {prefix} {category} for Girls_({color})",
-        f"{brand} {category} {prefix} Collection_({color})",
-        f"{prefix} {brand} {category} for Kids_({color})",
-        f"{brand} {prefix} {category}_({color})",
-        f"{prefix} {category} by {brand}_({color})",
-        f"{brand} {category} - {prefix}_({color})",
-    ]
-    return random.choice(templates)
+    for fn, ci in vcm.items():
+        vals = []
+        for r in range(ds, min(ds + 300, vs.max_row + 1)):
+            v = vs.cell(row=r, column=ci).value
+            if v: vals.append(str(v).strip())
+        if vals: dd[fn] = vals
+    return dd
 
 
-# ─── Data Injection ───────────────────────────────────────────────────────────
+def gen_sku(base, i):
+    return f"{base}_{''.join(random.choices(string.ascii_uppercase+string.digits,k=4))}{i+1}"
 
-def inject_data(wb, data_rows: list[dict]) -> None:
-    """Inject data rows into the Fill sheet."""
+def gen_style(base, i):
+    return f"{base}-{''.join(random.choices(string.ascii_uppercase+string.digits,k=3))}{i+1}"
+
+def gen_title(brand, cat, color, fabric="", occasion="", audience="for Kids"):
+    adj = random.choice(SEO_ADJECTIVES)
+    feat = random.choice(SEO_FEATURES)
+    occ = occasion if occasion else random.choice(SEO_OCCASIONS)
+    fab = fabric if fabric else ""
+    t = random.choice([
+        f"{brand} {adj} {fab} {cat} {feat} {occ} {audience}_({color})",
+        f"{brand} {fab} {cat} {adj} {feat} {occ} {audience}_({color})",
+        f"{adj} {brand} {fab} {cat} {occ} {feat} {audience}_({color})",
+        f"{brand} {cat} {adj} {fab} {feat} {occ} {audience}_({color})",
+    ])
+    return re.sub(r'\s+', ' ', t).strip()
+
+def vary_price(base, variation):
+    if variation <= 0: return base
+    return max(1.0, round(base + random.randint(-variation, variation), 2))
+
+def inject_data(wb, rows):
     ws = find_data_sheet(wb)
-    header_row = find_header_row(ws)
-    col_map = get_column_mapping(ws, header_row)
-    start_row = find_data_start_row(ws, header_row)
-
-    # Clear existing data rows
-    for row_idx in range(start_row, start_row + len(data_rows) + 100):
-        for col_idx in range(1, ws.max_column + 1):
-            ws.cell(row=row_idx, column=col_idx).value = None
-
-    # Write data
-    for i, row_data in enumerate(data_rows):
-        for field_name, value in row_data.items():
-            if field_name in col_map:
-                ws.cell(row=start_row + i, column=col_map[field_name]).value = value
+    hdr = find_header_row(ws)
+    cm = get_col_map(ws, hdr)
+    start = find_data_start(ws, hdr)
+    for r in range(start, start + len(rows) + 100):
+        for c in range(1, ws.max_column + 1):
+            ws.cell(row=r, column=c).value = None
+    for i, row in enumerate(rows):
+        for fn, val in row.items():
+            if fn in cm:
+                ws.cell(row=start+i, column=cm[fn]).value = val
 
 
 # ─── STREAMLIT APP ────────────────────────────────────────────────────────────
 
 def main():
-    st.set_page_config(page_title="Meesho Bulk Listing - Dynamic", layout="wide")
-    st.title("🛒 Meesho Bulk Listing Generator")
-    st.caption("Koi bhi Meesho template upload karo → Automatic form banega → Bulk fill karke download karo")
+    st.set_page_config(page_title="Bulk Listing Generator", layout="wide")
+    st.title("🛒 Bulk Listing Generator (Meesho + Flipkart)")
+    st.caption("Template upload → Dynamic form (with dropdowns) → Bulk fill → Download")
 
-    # Step 1: Upload template
-    st.subheader("📁 Step 1: Meesho Template Upload Karo")
-    uploaded_file = st.file_uploader(
-        "Meesho ka blank .xlsx template yahan upload karo",
-        type=["xlsx"],
-    )
+    uploaded = st.file_uploader("📁 Template upload karo (.xlsx)", type=["xlsx"])
+    if not uploaded:
+        st.info("👆 Meesho ya Flipkart ka blank template upload karo"); return
 
-    if uploaded_file is None:
-        st.info("👆 Meesho Supplier Panel se template download karke yahan upload karo")
-        return
-
-    # Parse template
     try:
-        wb = load_workbook(uploaded_file, keep_vba=False)
+        wb = load_workbook(uploaded, keep_vba=False)
         ws = find_data_sheet(wb)
-        header_row = find_header_row(ws)
-        col_map = get_column_mapping(ws, header_row)
-        data_start = find_data_start_row(ws, header_row)
+        hdr = find_header_row(ws)
+        col_map = get_col_map(ws, hdr)
+        data_start = find_data_start(ws, hdr)
+        compulsory = get_compulsory(ws, hdr, col_map)
+        dropdowns = get_dropdowns(wb, col_map)
     except Exception as e:
-        st.error(f"Template read error: {e}")
-        return
+        st.error(f"Error: {e}"); return
 
-    # Filter out system fields
-    form_fields = [f for f in col_map.keys() if f not in SKIP_FIELDS]
-    compulsory_fields = get_compulsory_fields(ws, header_row, col_map)
+    fields = [f for f in col_map if f not in SKIP_FIELDS]
+    st.success(f"✅ Sheet: '{ws.title}' | {len(fields)} fields | "
+               f"{len(compulsory)} required | {len(dropdowns)} dropdowns | Row: {data_start}")
 
-    st.success(f"✅ Template loaded! Sheet: '{ws.title}' | "
-               f"{len(form_fields)} fields detected | "
-               f"{len(compulsory_fields)} compulsory | Data row: {data_start}")
+    with st.expander("📋 All detected fields"):
+        for f in fields:
+            m = "⭐" if f in compulsory else "○"
+            d = f" 🔽[{len(dropdowns[f])} opts]" if f in dropdowns else ""
+            st.text(f"{m} {f}{d}")
 
-    with st.expander("📋 Detected Fields (click to see)"):
-        for f in form_fields:
-            marker = "⭐ REQUIRED" if f in compulsory_fields else "○ Optional"
-            st.text(f"{marker} — {f}")
+    with st.form("main_form"):
+        st.markdown("### 🎨 Core Settings")
+        c1, c2 = st.columns(2)
+        with c1:
+            colors_raw = st.text_input("Colors *", placeholder="Orange, Navy, Red")
+            brand = st.text_input("Brand Name *", placeholder="Riwaaz")
+            category = st.text_input("Product Category *", placeholder="Kurta Set")
+        with c2:
+            sizes_raw = st.text_input("Sizes *", placeholder="5-6 Years, 7-8 Years")
+            style_code = st.text_input("Base Style Code *", placeholder="A-501")
+            audience = st.selectbox("Target Audience *",
+                ["for Boys","for Girls","for Kids","for Baby Boys",
+                 "for Baby Girls","for Men","for Women","Unisex"])
 
-    # Step 2: Dynamic Form
-    st.subheader("📋 Step 2: Product Details Bharo")
-    st.markdown("*Auto-generated fields (Product Name, SKU ID, Style ID) form mein nahi dikhenge — "
-                "ye automatically random generate honge.*")
+        st.markdown("### 💰 Price & Count")
+        c3, c4, c5 = st.columns(3)
+        with c3:
+            count = st.number_input("Listings count", 1, 5000, 50, 10)
+        with c4:
+            price_var = st.number_input("Price variation (±₹)", 0, 100, 0, 5,
+                help="0 = same price. 20 = har row ±₹20 random.")
+        with c5:
+            st.markdown("") # spacer
 
-    with st.form("dynamic_form"):
-        # Special inputs first
-        st.markdown("**🎨 Colors & Sizes (for variation)**")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            colors_raw = st.text_input(
-                "Colors (comma-separated) *",
-                placeholder="Orange, Navy, Red, Blue, Green"
-            )
-        with col_b:
-            sizes_raw = st.text_input(
-                "Sizes / Variations (comma-separated) *",
-                placeholder="5-6 Years, 7-8 Years, 9-10 Years"
-            )
+        st.markdown("### 📝 Template Fields")
+        st.markdown("*Dropdown wale fields mein Validation Sheet ki values dikhegi*")
 
-        st.markdown("**🏷️ Brand & Style (for title/SKU generation)**")
-        col_c, col_d = st.columns(2)
-        with col_c:
-            brand_name = st.text_input("Brand Name *", placeholder="Riwaaz")
-        with col_d:
-            base_style_code = st.text_input("Base Style Code *", placeholder="A-501")
+        fv = {}
+        show = [f for f in fields if f not in AUTO_FIELDS
+                and f != VARIATION_FIELD and f != 'Brand Name']
+        req = [f for f in show if f in compulsory]
+        opt = [f for f in show if f not in compulsory]
 
-        product_category = st.text_input("Product Category (for title) *",
-                                         placeholder="Kurta Pyjama Set")
-
-        # Dynamic form fields from template
-        st.markdown("---")
-        st.markdown("**📝 Template Fields (detected from your uploaded file)**")
-        st.markdown("⭐ = Required field")
-
-        # Show input for each field that's NOT auto-generated or variation
-        field_values = {}
-        fields_to_show = [f for f in form_fields
-                          if f not in AUTO_GENERATED_FIELDS
-                          and f != VARIATION_FIELD
-                          and f != 'Brand Name']  # Brand Name already asked above
-
-        # Separate required and optional
-        required_fields = [f for f in fields_to_show if f in compulsory_fields]
-        optional_fields = [f for f in fields_to_show if f not in compulsory_fields]
-
-        # Show required fields first
-        if required_fields:
-            st.markdown("**⭐ Required Fields:**")
+        # Required fields
+        if req:
+            st.markdown("**⭐ Required:**")
             cols = st.columns(2)
-            for i, field in enumerate(required_fields):
+            for i, f in enumerate(req):
                 with cols[i % 2]:
-                    field_values[field] = st.text_input(
-                        f"⭐ {field}", key=f"field_{field}"
-                    )
+                    if f in dropdowns:
+                        fv[f] = st.selectbox(f"⭐ {f}", options=[""] + dropdowns[f],
+                                             key=f"f_{f}")
+                    else:
+                        fv[f] = st.text_input(f"⭐ {f}", key=f"f_{f}")
 
-        # Then optional
-        if optional_fields:
-            with st.expander("📎 Optional Fields (click to expand)"):
+        # Optional fields
+        if opt:
+            with st.expander(f"📎 Optional Fields ({len(opt)})"):
                 cols2 = st.columns(2)
-                for i, field in enumerate(optional_fields):
+                for i, f in enumerate(opt):
                     with cols2[i % 2]:
-                        field_values[field] = st.text_input(
-                            field, key=f"field_{field}"
-                        )
-
-        # Generation settings
-        st.markdown("---")
-        st.markdown("**🔢 Kitni Listings Generate Karni Hain?**")
-        listing_count = st.number_input(
-            "Number of Listings",
-            min_value=1, max_value=5000, value=50, step=10
-        )
+                        if f in dropdowns:
+                            fv[f] = st.selectbox(f, options=[""] + dropdowns[f],
+                                                 key=f"f_{f}")
+                        else:
+                            fv[f] = st.text_input(f, key=f"f_{f}")
 
         submitted = st.form_submit_button("🚀 Generate & Fill Template")
 
     if submitted:
-        # Validate
-        errors = []
-        if not colors_raw.strip():
-            errors.append("Colors required hain")
-        if not sizes_raw.strip():
-            errors.append("Sizes/Variations required hain")
-        if not brand_name.strip():
-            errors.append("Brand Name required hai")
-        if not base_style_code.strip():
-            errors.append("Base Style Code required hai")
-        if not product_category.strip():
-            errors.append("Product Category required hai")
-
-        # Validate compulsory template fields
-        for field in field_values:
-            if field in compulsory_fields and not field_values[field].strip():
-                errors.append(f"⭐ '{field}' required hai (Compulsory Field)")
-
-        if errors:
-            for e in errors:
-                st.error(e)
+        errs = []
+        if not colors_raw.strip(): errs.append("Colors required")
+        if not sizes_raw.strip(): errs.append("Sizes required")
+        if not brand.strip(): errs.append("Brand Name required")
+        if not style_code.strip(): errs.append("Style Code required")
+        if not category.strip(): errs.append("Product Category required")
+        for f in fv:
+            if f in compulsory and not str(fv[f]).strip():
+                errs.append(f"⭐ '{f}' required hai")
+        if errs:
+            for e in errs: st.error(e)
             return
 
-        colors = parse_comma_separated(colors_raw)
-        sizes = parse_comma_separated(sizes_raw)
+        colors = parse_csv(colors_raw)
+        sizes = parse_csv(sizes_raw)
 
-        # Generate data rows
-        data_rows = []
-        for i in range(int(listing_count)):
+        # Build rows
+        rows = []
+        for i in range(int(count)):
             color = colors[i % len(colors)]
             size = sizes[i % len(sizes)]
-
             row = {}
-
-            # Auto-generated fields
-            row['Product Name'] = generate_random_title(
-                brand_name.strip(), product_category.strip(), color
-            )
-            row['SKU ID'] = generate_random_sku(base_style_code.strip(), i)
-            row['Product ID / Style ID'] = generate_random_style_code(
-                base_style_code.strip(), i
-            )
-            row['Brand Name'] = brand_name.strip()
+            row['Product Name'] = gen_title(brand.strip(), category.strip(),
+                color, fabric=str(fv.get('Top Fabric','')),
+                occasion=str(fv.get('Occasion','')), audience=audience)
+            row['SKU ID'] = gen_sku(style_code.strip(), i)
+            row['Product ID / Style ID'] = gen_style(style_code.strip(), i)
+            row['Brand Name'] = brand.strip()
             row[VARIATION_FIELD] = size
+            for f, v in fv.items():
+                val = str(v).strip()
+                if val:
+                    # Price variation
+                    if f in PRICE_FIELDS and price_var > 0:
+                        try:
+                            row[f] = vary_price(float(val), price_var)
+                        except ValueError:
+                            row[f] = val
+                    else:
+                        row[f] = val
+            rows.append(row)
 
-            # Fill all other fields from form
-            for field, value in field_values.items():
-                if value.strip():
-                    row[field] = value.strip()
+        # Inject & download
+        uploaded.seek(0)
+        wb2 = load_workbook(uploaded, keep_vba=False)
+        inject_data(wb2, rows)
+        out = io.BytesIO()
+        wb2.save(out); out.seek(0)
 
-            data_rows.append(row)
+        st.success(f"✅ {len(rows)} listings filled!")
+        df = pd.DataFrame(rows)
+        prev = ['Product Name', VARIATION_FIELD, 'SKU ID', 'Brand Name']
+        st.dataframe(df[[c for c in prev if c in df.columns]].head(15),
+                     use_container_width=True)
+        if len(rows) > 15:
+            st.caption(f"...+{len(rows)-15} more rows in download")
 
-        # Inject into template
-        uploaded_file.seek(0)
-        wb = load_workbook(uploaded_file, keep_vba=False)
-        inject_data(wb, data_rows)
-
-        # Save to bytes
-        output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
-
-        st.success(f"✅ {len(data_rows)} listings generate ho gaye aur template mein fill ho gaye!")
-
-        # Preview
-        preview_df = pd.DataFrame(data_rows)
-        preview_cols = ['Product Name', VARIATION_FIELD, 'SKU ID',
-                        'Product ID / Style ID', 'Brand Name']
-        available = [c for c in preview_cols if c in preview_df.columns]
-        st.dataframe(preview_df[available].head(20), use_container_width=True)
-        if len(data_rows) > 20:
-            st.caption(f"... aur {len(data_rows) - 20} rows (download mein sab honge)")
-
-        # Download
-        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', base_style_code.strip())
-        filename = f"Meesho_{sanitized}_{len(data_rows)}listings_FILLED.xlsx"
-
-        st.download_button(
-            label="📥 Download Filled Template",
-            data=output.getvalue(),
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
+        fn = f"Filled_{re.sub(r'[^a-zA-Z0-9_-]','-',style_code)}_{len(rows)}.xlsx"
+        st.download_button("📥 Download Filled Template", out.getvalue(),
+                           fn, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
     main()
