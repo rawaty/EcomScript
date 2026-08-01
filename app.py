@@ -4,7 +4,87 @@ import io
 import re
 import random
 import string
+import json
+import os
 from openpyxl import load_workbook
+
+# ─── Profile & Preset Storage ─────────────────────────────────────────────────
+
+PROFILES_FILE = "profiles.json"
+PRESETS_FILE = "presets.json"
+
+
+def load_json(filepath):
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_json(filepath, data):
+    with open(filepath, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+# Default category presets
+DEFAULT_PRESETS = {
+    "Flip Flops (Men)": {
+        "Generic Name": "Flip Flops",
+        "Material": "EVA",
+        "Sole Material": "EVA",
+        "Type": "Thong Flip-flops",
+        "Pattern": "Solid",
+        "Waterproof": "Yes",
+        "Main Trend": "Solid/Regular",
+        "Net Quantity (N)": "1",
+        "Net Weight (gms)": "220",
+        "GST %": "5",
+        "HSN ID": "64022090",
+    },
+    "Flip Flops (Women)": {
+        "Generic Name": "Flip Flops",
+        "Material": "PU",
+        "Sole Material": "PU",
+        "Type": "Thong Flip-flops",
+        "Pattern": "Printed",
+        "Waterproof": "No",
+        "Main Trend": "Floral",
+        "Net Quantity (N)": "1",
+        "Net Weight (gms)": "180",
+        "GST %": "5",
+        "HSN ID": "64022090",
+    },
+    "Kurta Sets (Girls)": {
+        "Generic Name": "Kurta Sets",
+        "Bottom Type": "pyjamas",
+        "Dupatta": "Without Dupatta",
+        "Occasion": "ethnic",
+        "Sleeve Length": "Long Sleeves",
+        "Stitch": "Ready To Wear",
+        "Top Fabric": "Cotton",
+        "Top Pattern": "Printed",
+        "Top Shape": "straight",
+        "Top Hemline": "straight",
+        "Top Design Styling": "regular",
+        "Net Weight (gms)": "300",
+        "GST %": "5",
+        "HSN ID": "6111",
+    },
+    "Sliders (Men)": {
+        "Generic Name": "Sliders",
+        "Material": "Synthetic",
+        "Sole Material": "Rubber",
+        "Type": "Sliders",
+        "Pattern": "Solid",
+        "Waterproof": "No",
+        "Main Trend": "Solid/Regular",
+        "Net Quantity (N)": "1",
+        "Net Weight (gms)": "250",
+        "GST %": "5",
+        "HSN ID": "64022090",
+    },
+}
+
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -221,6 +301,51 @@ def main():
             d = f" 🔽[{len(dropdowns[f])} opts]" if f in dropdowns else ""
             st.text(f"{m} {f}{d}")
 
+    # ─── Profiles & Presets Section ──────────────────────────────────────────
+    st.markdown("---")
+    prof_col, preset_col = st.columns(2)
+
+    with prof_col:
+        st.markdown("**👤 Saved Profiles (Manufacturer Details)**")
+        profiles = load_json(PROFILES_FILE)
+        profile_names = list(profiles.keys())
+
+        if profile_names:
+            selected_profile = st.selectbox("Load Profile", ["-- None --"] + profile_names,
+                                            key="profile_select")
+        else:
+            selected_profile = "-- None --"
+            st.caption("No saved profiles yet. Fill the form and save.")
+
+    with preset_col:
+        st.markdown("**📦 Category Presets (One-click fill)**")
+        all_presets = {**DEFAULT_PRESETS, **load_json(PRESETS_FILE)}
+        preset_names = list(all_presets.keys())
+        selected_preset = st.selectbox("Load Preset", ["-- None --"] + preset_names,
+                                       key="preset_select")
+
+    # Store prefill values in session state so they persist
+    if selected_profile != "-- None --" and selected_profile in profiles:
+        for k, v in profiles[selected_profile].items():
+            st.session_state[f"f_{k}"] = v
+        st.session_state['prefill'] = profiles[selected_profile]
+    if selected_preset != "-- None --" and selected_preset in all_presets:
+        for k, v in all_presets[selected_preset].items():
+            st.session_state[f"f_{k}"] = v
+        st.session_state['prefill'] = {**st.session_state.get('prefill', {}), **all_presets[selected_preset]}
+
+    prefill = st.session_state.get('prefill', {})
+
+    # Clear button
+    if st.button("🗑️ Clear prefill", key="clear_prefill"):
+        st.session_state['prefill'] = {}
+        prefill = {}
+        # Clear all form field keys
+        keys_to_clear = [k for k in st.session_state if k.startswith("f_")]
+        for k in keys_to_clear:
+            del st.session_state[k]
+        st.rerun()
+
     with st.form("main_form"):
         st.markdown("### 🎨 Core Settings")
         c1, c2 = st.columns(2)
@@ -300,7 +425,8 @@ def main():
         fv = {}
         show = [f for f in fields if f not in AUTO_FIELDS
                 and f != VARIATION_FIELD and f != 'Brand Name'
-                and f not in ('Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4')]
+                and f not in ('Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4')
+                and f not in ('Foot Length Size', 'Foot Width Size')]
         req = [f for f in show if f in compulsory]
         opt = [f for f in show if f not in compulsory]
 
@@ -311,8 +437,8 @@ def main():
             for i, f in enumerate(req):
                 with cols[i % 2]:
                     if f in dropdowns:
-                        fv[f] = st.selectbox(f"⭐ {f}", options=[""] + dropdowns[f],
-                                             key=f"f_{f}")
+                        opts = [""] + dropdowns[f]
+                        fv[f] = st.selectbox(f"⭐ {f}", options=opts, key=f"f_{f}")
                     else:
                         fv[f] = st.text_input(f"⭐ {f}", key=f"f_{f}")
 
@@ -323,12 +449,38 @@ def main():
                 for i, f in enumerate(opt):
                     with cols2[i % 2]:
                         if f in dropdowns:
-                            fv[f] = st.selectbox(f, options=[""] + dropdowns[f],
-                                                 key=f"f_{f}")
+                            opts = [""] + dropdowns[f]
+                            fv[f] = st.selectbox(f, options=opts, key=f"f_{f}")
                         else:
                             fv[f] = st.text_input(f, key=f"f_{f}")
 
         submitted = st.form_submit_button("🚀 Generate & Fill Template")
+
+        # Save Profile option inside form
+        st.markdown("---")
+        st.markdown("**💾 Save Profile**")
+        save_col1, save_col2 = st.columns([3, 1])
+        with save_col1:
+            profile_name = st.text_input("Profile name to save", placeholder="My Business",
+                                         key="save_profile_name")
+        with save_col2:
+            save_profile = st.form_submit_button("💾 Save")
+
+    if save_profile:
+        if profile_name.strip():
+            profiles = load_json(PROFILES_FILE)
+            profile_data = {}
+            for f, v in fv.items():
+                val = str(v).strip()
+                if val:
+                    profile_data[f] = val
+            profile_data['Brand Name'] = brand.strip() if brand else ""
+            profiles[profile_name.strip()] = profile_data
+            save_json(PROFILES_FILE, profiles)
+            st.success(f"✅ Profile '{profile_name.strip()}' saved! Reload page to see it in dropdown.")
+        else:
+            st.error("Profile name daalo")
+        return
 
     if submitted:
         errs = []
