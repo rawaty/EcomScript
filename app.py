@@ -7,6 +7,13 @@ import string
 import json
 import os
 from openpyxl import load_workbook
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Import AI helper
+from ai_helper import ai_generate_titles, ai_generate_description, ai_suggest_fields
 
 # ─── Profile & Preset Storage ─────────────────────────────────────────────────
 
@@ -55,10 +62,10 @@ DEFAULT_PRESETS = {
         "HSN ID": "64022090",
     },
     "Kurta Sets (Girls)": {
-        "Generic Name": "Kurta Sets",
+        "Generic Name": "Kurtis & Kurtas",
         "Bottom Type": "pyjamas",
         "Dupatta": "Without Dupatta",
-        "Occasion": "ethnic",
+        "Occasion": "Casual",
         "Sleeve Length": "Long Sleeves",
         "Stitch": "Ready To Wear",
         "Top Fabric": "Cotton",
@@ -90,8 +97,8 @@ DEFAULT_PRESETS = {
 
 SEO_ADJECTIVES = [
     "Premium", "Stylish", "Trendy", "Designer", "Exclusive",
-    "Comfortable", "Beautiful", "Attractive", "Latest", "Fashionable",
-    "Traditional", "Modern", "Elegant", "Classic", "New Launched",
+    "Beautiful", "Attractive", "Latest", "Fashionable",
+    "Traditional", "Modern", "Classic", "New Launched",
 ]
 SEO_FEATURES = [
     "Embroidered", "Printed", "Self Design", "Solid", "Woven",
@@ -99,7 +106,7 @@ SEO_FEATURES = [
     "Striped", "Geometric", "Abstract", "Ethnic Motif", "Colorblocked",
 ]
 SEO_OCCASIONS = [
-    "Ethnic Wear", "Party Wear", "Casual Wear", "Daily Wear",
+    "Ethnic Wear", "Party Wear", "Casual Wear",
     "Festive Wear", "Wedding Wear", "Festival Collection",
 ]
 SKIP_FIELDS = {'ERROR STATUS', 'ERROR MESSAGE'}
@@ -124,6 +131,7 @@ RESTRICTED_KEYWORDS = [
     'comfort', 'comfortable', 'EVA', 'everyday', 'daily wear',
     'best quality', 'premium quality', 'high quality', 'top quality',
     'Amazon', 'Flipkart', 'Myntra', 'Ajio',
+    'elegant',
 ]
 
 
@@ -238,13 +246,23 @@ def gen_style(base, i):
 def gen_title(brand, cat, color, fabric="", occasion="", audience="for Kids"):
     adj = random.choice(SEO_ADJECTIVES)
     feat = random.choice(SEO_FEATURES)
-    occ = occasion if occasion else random.choice(SEO_OCCASIONS)
-    # Do NOT include fabric/material in title — restricted keywords like EVA cause errors
+    # If occasion is a raw value like "ethnic", convert to proper format "Ethnic Wear"
+    if occasion and occasion.strip():
+        occ_val = occasion.strip()
+        if not any(occ_val.lower().endswith(s) for s in ['wear', 'collection']):
+            occ_val = f"{occ_val.title()} Wear"
+        else:
+            occ_val = occ_val.title()
+        occ = occ_val
+    else:
+        occ = random.choice(SEO_OCCASIONS)
+    # Meesho rule: Each color = separate product = needs UNIQUE Product Name
+    # Include color naturally in title
     t = random.choice([
-        f"{brand} {adj} {cat} {feat} {occ} {audience}_({color})",
-        f"{brand} {cat} {adj} {feat} {occ} {audience}_({color})",
-        f"{adj} {brand} {cat} {occ} {feat} {audience}_({color})",
-        f"{brand} {cat} {adj} {feat} {audience} {occ}_({color})",
+        f"{brand} {adj} {color} {cat} {feat} {occ} {audience}",
+        f"{brand} {color} {cat} {adj} {feat} {occ} {audience}",
+        f"{adj} {brand} {color} {cat} {occ} {feat} {audience}",
+        f"{brand} {color} {cat} {adj} {feat} {audience} {occ}",
     ])
     # Remove any restricted keywords from title
     for kw in RESTRICTED_KEYWORDS:
@@ -263,10 +281,25 @@ def inject_data(wb, rows):
     for r in range(start, start + len(rows) + 100):
         for c in range(1, ws.max_column + 1):
             ws.cell(row=r, column=c).value = None
+
+    # Fields that must be written as numbers (to match Meesho dropdown validation)
+    NUMERIC_FIELDS = {
+        'HSN ID', 'GST %', 'Net Weight (gms)', 'Inventory',
+        'Net Quantity (N)', 'MRP', 'Meesho Price', 'Wrong/Defective Returns Price',
+        'Selling Price', 'Manufacturer Pincode', 'Packer Pincode', 'Importer Pincode',
+    }
+
     for i, row in enumerate(rows):
         for fn, val in row.items():
             if fn in cm:
-                ws.cell(row=start+i, column=cm[fn]).value = val
+                if fn in NUMERIC_FIELDS and val is not None and str(val).strip():
+                    try:
+                        num_val = float(str(val).strip())
+                        ws.cell(row=start+i, column=cm[fn]).value = int(num_val) if num_val == int(num_val) else num_val
+                    except (ValueError, TypeError):
+                        ws.cell(row=start+i, column=cm[fn]).value = val
+                else:
+                    ws.cell(row=start+i, column=cm[fn]).value = val
 
 
 # ─── STREAMLIT APP ────────────────────────────────────────────────────────────
@@ -346,6 +379,12 @@ def main():
             del st.session_state[k]
         st.rerun()
 
+    # Always remove programmatic fields from session state (prevent stale overwrites)
+    for stale_key in ['f_Group ID', 'f_Color', 'f_Product Name', 'f_SKU ID',
+                      'f_Product ID / Style ID']:
+        if stale_key in st.session_state:
+            del st.session_state[stale_key]
+
     with st.form("main_form"):
         st.markdown("### 🎨 Core Settings")
         c1, c2 = st.columns(2)
@@ -381,6 +420,21 @@ def main():
             audience = st.selectbox("Target Audience *",
                 ["for Boys","for Girls","for Kids","for Baby Boys",
                  "for Baby Girls","for Men","for Women","Unisex"])
+
+        st.markdown("### 🤖 AI Settings (Google Gemini — Free)")
+        ai_col1, ai_col2 = st.columns(2)
+        with ai_col1:
+            use_ai_titles = st.checkbox("✨ AI Title Generation",
+                help="Gemini se Meesho-optimized SEO titles generate karo")
+            use_ai_desc = st.checkbox("📝 AI Product Description",
+                help="AI se product description auto-generate")
+        with ai_col2:
+            use_ai_suggest = st.checkbox("💡 AI Field Suggestions",
+                help="Category ke basis pe fields auto-fill karo")
+            gemini_key = st.text_input("Gemini API Key",
+                value=os.environ.get("GEMINI_API_KEY", ""),
+                type="password",
+                help="https://aistudio.google.com/apikey se free key lo")
 
         st.markdown("### 💰 Price & Count")
         c3, c4, c5 = st.columns(3)
@@ -426,7 +480,8 @@ def main():
         show = [f for f in fields if f not in AUTO_FIELDS
                 and f != VARIATION_FIELD and f != 'Brand Name'
                 and f not in ('Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4')
-                and f not in ('Foot Length Size', 'Foot Width Size')]
+                and f not in ('Foot Length Size', 'Foot Width Size')
+                and f != 'Group ID' and f != 'Color']
         req = [f for f in show if f in compulsory]
         opt = [f for f in show if f not in compulsory]
 
@@ -499,6 +554,17 @@ def main():
         colors = parse_csv(colors_raw)
         sizes = parse_csv(sizes_raw)
 
+        # AI Field Suggestions — auto-fill empty fields
+        if use_ai_suggest and gemini_key:
+            os.environ["GEMINI_API_KEY"] = gemini_key
+            suggestions = ai_suggest_fields(category.strip(), list(col_map.keys()))
+            if suggestions:
+                for field, value in suggestions.items():
+                    # Only fill if user hasn't already provided a value
+                    if field in fv and not str(fv[field]).strip():
+                        fv[field] = value
+                st.info(f"🤖 AI suggested values for {len(suggestions)} fields")
+
         # Parse image URL pools
         img1_urls = [u.strip() for u in img1_raw.strip().split('\n') if u.strip()]
         img2_urls = [u.strip() for u in img2_raw.strip().split('\n') if u.strip()]
@@ -529,9 +595,20 @@ def main():
         for cat_idx, cat_name in enumerate(catalog_categories):
             # Generate unique titles for this catalog
             color_titles = {}
+            # Try AI title generation first
+            ai_titles = None
+            if use_ai_titles and gemini_key:
+                os.environ["GEMINI_API_KEY"] = gemini_key
+                ai_titles = ai_generate_titles(
+                    brand.strip(), cat_name, colors,
+                    str(fv.get('Occasion', 'Casual Wear')), audience
+                )
             for color in colors:
-                color_titles[color] = gen_title(brand.strip(), cat_name,
-                    color, occasion=str(fv.get('Occasion', '')), audience=audience)
+                if ai_titles and color in ai_titles:
+                    color_titles[color] = ai_titles[color]
+                else:
+                    color_titles[color] = gen_title(brand.strip(), cat_name,
+                        color, occasion=str(fv.get('Occasion', '')), audience=audience)
 
             # Unique style code per catalog
             catalog_style = f"{style_code.strip()}-C{cat_idx+1}" if cat_idx > 0 else style_code.strip()
@@ -550,13 +627,20 @@ def main():
                     row['Brand Name'] = brand.strip()
                     row[VARIATION_FIELD] = size
 
-                    # Group ID — different per catalog
-                    row['Group ID'] = str(cat_idx + 1)
+                    # Group ID — unique per color per catalog
+                    # Meesho rule: same Group ID = same product
+                    # Each color in each catalog is a separate product
+                    group_num = cat_idx * len(colors) + ci + 1
+                    row['Group ID'] = str(group_num)
 
-                    # Price
+                    # Price & other fields
                     for f, v in fv.items():
                         val = str(v).strip()
                         if not val:
+                            continue
+                        # Skip fields we set programmatically — don't overwrite!
+                        if f in ('Group ID', 'Product Name', 'SKU ID',
+                                 'Product ID / Style ID', 'Brand Name', 'Color'):
                             continue
                         if f == 'Meesho Price':
                             try:
@@ -597,6 +681,21 @@ def main():
                     if 'Color' in col_map:
                         row['Color'] = color
 
+                    # AI Product Description (generate once per color)
+                    if use_ai_desc and gemini_key and 'Product Description' in col_map:
+                        if si == 0:  # Only generate once per color, reuse for all sizes
+                            os.environ["GEMINI_API_KEY"] = gemini_key
+                            ai_desc = ai_generate_description(
+                                brand.strip(), cat_name, color,
+                                str(fv.get('Fabric', '')),
+                                str(fv.get('Occasion', '')), audience
+                            )
+                            if ai_desc:
+                                st.session_state[f'ai_desc_{cat_idx}_{ci}'] = ai_desc
+                        desc = st.session_state.get(f'ai_desc_{cat_idx}_{ci}', '')
+                        if desc:
+                            row['Product Description'] = desc
+
                     rows.append(row)
                     row_idx += 1
                     catalog_row_count += 1
@@ -604,23 +703,82 @@ def main():
                     break
 
         # Inject & download
-        uploaded.seek(0)
-        wb2 = load_workbook(uploaded, keep_vba=False)
-        inject_data(wb2, rows)
-        out = io.BytesIO()
-        wb2.save(out); out.seek(0)
+        # MEESHO RULE: Each catalog = separate Excel file
+        if num_catalogs > 1:
+            # Split rows by catalog and generate separate files
+            import zipfile
+            catalog_rows = {}
+            for row in rows:
+                gid = row.get('Group ID', '1')
+                # Find which catalog this belongs to based on index
+                if gid not in catalog_rows:
+                    catalog_rows[gid] = []
+                catalog_rows[gid].append(row)
 
-        st.success(f"✅ {len(rows)} listings generated and filled!")
-        df = pd.DataFrame(rows)
-        prev = ['Product Name', VARIATION_FIELD, 'SKU ID', 'Brand Name']
-        st.dataframe(df[[c for c in prev if c in df.columns]].head(15),
-                     use_container_width=True)
-        if len(rows) > 15:
-            st.caption(f"...+{len(rows)-15} more rows in download")
+            # Group by catalog (each catalog = colors sharing same catalog_style)
+            # Rebuild: rows per catalog
+            rows_per_catalog = []
+            start_idx = 0
+            for cat_idx in range(len(catalog_categories)):
+                cat_rows = []
+                for ci in range(len(colors)):
+                    for si in range(len(sizes)):
+                        if start_idx < len(rows):
+                            cat_rows.append(rows[start_idx])
+                            start_idx += 1
+                        if len(cat_rows) >= actual_per_catalog:
+                            break
+                    if len(cat_rows) >= actual_per_catalog:
+                        break
+                rows_per_catalog.append(cat_rows)
 
-        fn = f"Filled_{re.sub(r'[^a-zA-Z0-9_-]','-',style_code)}_{len(rows)}.xlsx"
-        st.download_button("📥 Download Filled Template", out.getvalue(),
-                           fn, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            # Create ZIP with separate Excel files
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for cat_idx, cat_rows in enumerate(rows_per_catalog):
+                    if not cat_rows:
+                        continue
+                    uploaded.seek(0)
+                    wb_cat = load_workbook(uploaded, keep_vba=False)
+                    inject_data(wb_cat, cat_rows)
+                    cat_out = io.BytesIO()
+                    wb_cat.save(cat_out)
+                    cat_out.seek(0)
+                    cat_name_safe = re.sub(r'[^a-zA-Z0-9_-]', '-', catalog_categories[cat_idx])
+                    zf.writestr(f"Catalog_{cat_idx+1}_{cat_name_safe}.xlsx", cat_out.getvalue())
+
+            zip_buffer.seek(0)
+
+            st.success(f"✅ {len(rows)} listings generated across {len(rows_per_catalog)} catalogs!")
+            st.info(f"📦 {len(rows_per_catalog)} separate Excel files in ZIP — har catalog alag upload karo Meesho pe")
+            df = pd.DataFrame(rows)
+            prev = ['Product Name', VARIATION_FIELD, 'SKU ID', 'Group ID', 'Color']
+            st.dataframe(df[[c for c in prev if c in df.columns]].head(20),
+                         use_container_width=True)
+
+            fn = f"Catalogs_{re.sub(r'[^a-zA-Z0-9_-]','-',style_code)}_{len(rows_per_catalog)}files.zip"
+            st.download_button("📥 Download All Catalogs (ZIP)", zip_buffer.getvalue(),
+                               fn, "application/zip")
+
+        else:
+            # Single catalog — single file
+            uploaded.seek(0)
+            wb2 = load_workbook(uploaded, keep_vba=False)
+            inject_data(wb2, rows)
+            out = io.BytesIO()
+            wb2.save(out); out.seek(0)
+
+            st.success(f"✅ {len(rows)} listings generated and filled!")
+            df = pd.DataFrame(rows)
+            prev = ['Product Name', VARIATION_FIELD, 'SKU ID', 'Brand Name']
+            st.dataframe(df[[c for c in prev if c in df.columns]].head(15),
+                         use_container_width=True)
+            if len(rows) > 15:
+                st.caption(f"...+{len(rows)-15} more rows in download")
+
+            fn = f"Filled_{re.sub(r'[^a-zA-Z0-9_-]','-',style_code)}_{len(rows)}.xlsx"
+            st.download_button("📥 Download Filled Template", out.getvalue(),
+                               fn, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
     main()
