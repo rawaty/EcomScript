@@ -18,7 +18,8 @@ load_dotenv()
 
 from ai_helper import ai_generate_titles, ai_generate_description, ai_suggest_fields
 from qc_checker import run_qc_check
-from database import get_supabase_client, check_duplicates, save_listings, get_listing_count
+from database import (get_supabase_client, check_duplicates, save_listings,
+                      get_listing_count, save_profile_cloud, load_profiles_cloud)
 
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -349,8 +350,13 @@ def main():
                 if analysis.get('category'):
                     st.session_state['ai_category'] = analysis['category']
                 if analysis.get('description'):
-                    st.session_state['ai_description'] = analysis['description']
-                    st.session_state['f_Product Description'] = analysis['description']
+                    desc_text = analysis['description']
+                    # Remove restricted keywords from AI description
+                    for kw in RESTRICTED_KEYWORDS:
+                        desc_text = re.sub(r'\b' + re.escape(kw) + r'\b', '', desc_text, flags=re.IGNORECASE)
+                    desc_text = re.sub(r'\s+', ' ', desc_text).strip()
+                    st.session_state['ai_description'] = desc_text
+                    st.session_state['f_Product Description'] = desc_text
                 if analysis.get('title_suggestion'):
                     st.session_state['ai_title'] = analysis['title_suggestion']
                 st.session_state['ai_analysis_done'] = True
@@ -379,7 +385,12 @@ def main():
     prof_col, preset_col = st.columns(2)
     with prof_col:
         st.markdown("**👤 Saved Profiles**")
-        profiles = load_json(PROFILES_FILE)
+        # Load from Supabase if available, fallback to local
+        db_client_profiles = get_supabase_client()
+        if db_client_profiles:
+            profiles = load_profiles_cloud(db_client_profiles)
+        else:
+            profiles = load_json(PROFILES_FILE)
         profile_names = list(profiles.keys())
         selected_profile = st.selectbox("Load Profile", ["-- None --"] + profile_names,
                                         key="profile_select") if profile_names else "-- None --"
@@ -505,6 +516,46 @@ def main():
 
         submitted = st.form_submit_button("🚀 Generate & Fill Template")
 
+    # ─── SAVE PROFILE ─────────────────────────────────────────────────────
+    with st.expander("💾 Save / Update Profile"):
+        save_col1, save_col2, save_col3 = st.columns([3, 1, 1])
+        with save_col1:
+            profile_name = st.text_input("Profile name", placeholder="My Business")
+        with save_col2:
+            st.markdown("")
+            save_btn = st.button("💾 Save")
+        with save_col3:
+            st.markdown("")
+            update_btn = st.button("🔄 Update")
+
+        if save_btn or update_btn:
+            if profile_name.strip():
+                # Save ONLY compulsory/required fields
+                profile_data = {}
+                for key, val in st.session_state.items():
+                    if key.startswith("f_"):
+                        field_name = key[2:]
+                        if field_name in compulsory and str(val).strip():
+                            profile_data[field_name] = str(val).strip()
+
+                db_save = get_supabase_client()
+                if db_save:
+                    if save_profile_cloud(db_save, profile_name.strip(), profile_data):
+                        action = "Updated" if update_btn else "Saved"
+                        st.success(f"✅ Profile '{profile_name.strip()}' {action}! ({len(profile_data)} fields)")
+                    else:
+                        profiles_local = load_json(PROFILES_FILE)
+                        profiles_local[profile_name.strip()] = profile_data
+                        save_json(PROFILES_FILE, profiles_local)
+                        st.warning("⚠️ Cloud failed — saved locally")
+                else:
+                    profiles_local = load_json(PROFILES_FILE)
+                    profiles_local[profile_name.strip()] = profile_data
+                    save_json(PROFILES_FILE, profiles_local)
+                    st.success(f"✅ Profile '{profile_name.strip()}' saved locally!")
+            else:
+                st.error("Profile name daalo")
+
     # ─── GENERATION LOGIC ─────────────────────────────────────────────────
     if not submitted:
         return
@@ -516,6 +567,10 @@ def main():
     if not brand.strip(): errs.append("Brand Name required")
     if not style_code.strip(): errs.append("Style Code required")
     if not category.strip(): errs.append("Product Category required")
+    # Check template compulsory fields
+    for f in fv:
+        if f in compulsory and not str(fv[f]).strip():
+            errs.append(f"⭐ '{f}' is required")
     if errs:
         for e in errs:
             st.error(e)
@@ -646,7 +701,11 @@ def main():
                     if desc:
                         st.session_state[f'desc_{cat_idx}_{ci}'] = desc
                 if f'desc_{cat_idx}_{ci}' in st.session_state:
-                    row['Product Description'] = st.session_state[f'desc_{cat_idx}_{ci}']
+                    raw_desc = st.session_state[f'desc_{cat_idx}_{ci}']
+                    # Remove restricted keywords from description
+                    for kw in RESTRICTED_KEYWORDS:
+                        raw_desc = re.sub(r'\b' + re.escape(kw) + r'\b', '', raw_desc, flags=re.IGNORECASE)
+                    row['Product Description'] = re.sub(r'\s+', ' ', raw_desc).strip()
 
                 rows.append(row)
                 row_idx += 1

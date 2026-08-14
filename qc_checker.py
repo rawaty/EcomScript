@@ -101,6 +101,19 @@ def run_qc_check(rows, col_map, dropdowns=None):
                     "message": f"Warning keyword '{kw}' in title — may flag on some categories"
                 })
 
+        # Check description too
+        desc = row.get('Product Description', '')
+        if desc:
+            for kw in RESTRICTED_KEYWORDS:
+                if kw.lower() in desc.lower():
+                    errors.append({
+                        "row": i + 1,
+                        "field": "Product Description",
+                        "error_type": "ERROR",
+                        "message": f"Restricted keyword '{kw}' found in description"
+                    })
+                    break  # One error per row enough
+
     # ─── Check 5: Price Rules ─────────────────────────────────────────
     for i, row in enumerate(rows):
         mp = row.get('Meesho Price')

@@ -152,3 +152,42 @@ def get_recent_listings(client, limit=20):
         return resp.data
     except Exception:
         return []
+
+
+# ─── PROFILES (Cloud) ─────────────────────────────────────────────────────
+
+def save_profile_cloud(client, name, data):
+    """Save profile to Supabase (upsert — insert or update)."""
+    if not client:
+        return False
+    try:
+        client.table("profiles").upsert(
+            {"name": name, "data": data},
+            on_conflict="name"
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"Profile save error: {e}")
+        return False
+
+
+def load_profiles_cloud(client):
+    """Load all profiles from Supabase. Returns dict {name: data}."""
+    if not client:
+        return {}
+    try:
+        resp = client.table("profiles").select("name, data").execute()
+        return {r["name"]: r["data"] for r in resp.data}
+    except Exception:
+        return {}
+
+
+def delete_profile_cloud(client, name):
+    """Delete a profile from Supabase."""
+    if not client:
+        return False
+    try:
+        client.table("profiles").delete().eq("name", name).execute()
+        return True
+    except Exception:
+        return False
