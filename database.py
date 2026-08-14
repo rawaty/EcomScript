@@ -1,0 +1,154 @@
+"""
+Database Module — Supabase Cloud Integration
+Stores all generated listings to prevent duplicates across uploads.
+"""
+
+import os
+from datetime import datetime
+
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+
+
+def get_supabase_client():
+    """Get Supabase client. Returns None if not configured."""
+    if not SUPABASE_AVAILABLE:
+        return None
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def init_database(client):
+    """
+    Initialize database tables via Supabase.
+    NOTE: Tables must be created via Supabase Dashboard SQL Editor.
+    Run this SQL in Supabase Dashboard → SQL Editor:
+
+    CREATE TABLE IF NOT EXISTS listings (
+        id BIGSERIAL PRIMARY KEY,
+        style_id TEXT NOT NULL,
+        sku_id TEXT NOT NULL,
+        product_name TEXT,
+        brand TEXT,
+        color TEXT,
+        category TEXT,
+        image_urls TEXT[],
+        catalog_name TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        status TEXT DEFAULT 'active'
+    );
+
+    CREATE INDEX idx_style_id ON listings(style_id);
+    CREATE INDEX idx_sku_id ON listings(sku_id);
+    CREATE INDEX idx_image_urls ON listings USING GIN(image_urls);
+    """
+    pass  # Tables created via Supabase Dashboard
+
+
+def check_duplicates(client, style_ids=None, sku_ids=None, image_urls=None):
+    """
+    Check if any Style IDs, SKU IDs, or Image URLs already exist.
+    Returns dict with duplicate info.
+    """
+    if not client:
+        return {"style_ids": [], "sku_ids": [], "image_urls": []}
+
+    result = {"style_ids": [], "sku_ids": [], "image_urls": []}
+
+    try:
+        # Check Style IDs
+        if style_ids:
+            resp = client.table("listings").select("style_id").in_("style_id", list(style_ids)).execute()
+            result["style_ids"] = [r["style_id"] for r in resp.data]
+
+        # Check SKU IDs
+        if sku_ids:
+            resp = client.table("listings").select("sku_id").in_("sku_id", list(sku_ids)).execute()
+            result["sku_ids"] = [r["sku_id"] for r in resp.data]
+
+        # Check Image URLs
+        if image_urls:
+            # Check each URL against stored arrays
+            for url in image_urls:
+                resp = client.table("listings").select("id, style_id").contains("image_urls", [url]).execute()
+                if resp.data:
+                    result["image_urls"].append(url)
+
+    except Exception as e:
+        print(f"Database check error: {e}")
+
+    return result
+
+
+def save_listings(client, rows, catalog_name=""):
+    """
+    Save generated listings to database for future duplicate checking.
+    """
+    if not client:
+        return False
+
+    try:
+        records = []
+        for row in rows:
+            # Collect all image URLs for this row
+            imgs = []
+            for img_field in ['Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4']:
+                url = row.get(img_field, '')
+                if url:
+                    imgs.append(url)
+
+            records.append({
+                "style_id": row.get("Product ID / Style ID", ""),
+                "sku_id": row.get("SKU ID", ""),
+                "product_name": row.get("Product Name", ""),
+                "brand": row.get("Brand Name", ""),
+                "color": row.get("Color", ""),
+                "category": row.get("Generic Name", ""),
+                "image_urls": imgs,
+                "catalog_name": catalog_name,
+                "status": "active",
+            })
+
+        # Batch insert (Supabase handles it)
+        if records:
+            client.table("listings").insert(records).execute()
+        return True
+
+    except Exception as e:
+        print(f"Database save error: {e}")
+        return False
+
+
+def get_listing_count(client):
+    """Get total number of saved listings."""
+    if not client:
+        return 0
+    try:
+        resp = client.table("listings").select("id", count="exact").execute()
+        return resp.count or 0
+    except Exception:
+        return 0
+
+
+def get_recent_listings(client, limit=20):
+    """Get recent listings for display."""
+    if not client:
+        return []
+    try:
+        resp = (client.table("listings")
+                .select("style_id, product_name, color, catalog_name, created_at")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute())
+        return resp.data
+    except Exception:
+        return []
