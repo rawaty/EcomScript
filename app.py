@@ -677,13 +677,23 @@ def main():
 
     if db_client:
         all_style_ids = set(r.get('Product ID / Style ID', '') for r in rows)
+        all_sku_ids = set(r.get('SKU ID', '') for r in rows)
         all_img_urls = set()
         for r in rows:
             for img_f in ['Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4']:
                 if r.get(img_f):
                     all_img_urls.add(r[img_f])
 
-        dupes = check_duplicates(db_client, all_style_ids, image_urls=list(all_img_urls)[:20])
+        dupes = check_duplicates(db_client, all_style_ids, all_sku_ids, list(all_img_urls)[:20])
+
+        # If duplicate SKUs found, regenerate them
+        if dupes["sku_ids"]:
+            dupe_skus = set(dupes["sku_ids"])
+            for row in rows:
+                while row.get('SKU ID', '') in dupe_skus:
+                    row['SKU ID'] = gen_sku(style_code.strip(), random.randint(100, 9999))
+            st.info(f"🔄 {len(dupe_skus)} duplicate SKU IDs detected — auto-regenerated!")
+
         if dupes["style_ids"]:
             st.error(f"🔴 DUPLICATE Style IDs! Already uploaded: {dupes['style_ids'][:3]}")
         if dupes["image_urls"]:
