@@ -530,29 +530,39 @@ def main():
 
         if save_btn or update_btn:
             if profile_name.strip():
-                # Save ONLY compulsory/required fields
+                # Save all filled form fields (skip category-specific dropdowns)
+                SKIP_IN_PROFILE = {
+                    'Generic Name', 'Color', 'Pattern', 'Fabric', 'Occasion',
+                    'Fit/ Shape', 'Length', 'Neck/Collar', 'Ornamentation',
+                    'Print or Pattern Type', 'Sleeve Length',
+                    'Bottom Length Size', 'Bottom Waist Size',
+                    'Duppatta Length Size', 'Top Bust Size', 'Top Length Size',
+                }
                 profile_data = {}
                 for key, val in st.session_state.items():
                     if key.startswith("f_"):
                         field_name = key[2:]
-                        if field_name in compulsory and str(val).strip():
+                        if field_name not in SKIP_IN_PROFILE and str(val).strip():
                             profile_data[field_name] = str(val).strip()
 
-                db_save = get_supabase_client()
-                if db_save:
-                    if save_profile_cloud(db_save, profile_name.strip(), profile_data):
-                        action = "Updated" if update_btn else "Saved"
-                        st.success(f"✅ Profile '{profile_name.strip()}' {action}! ({len(profile_data)} fields)")
+                if not profile_data:
+                    st.error("Koi field filled nahi hai — pehle form bharo fir save karo")
+                else:
+                    db_save = get_supabase_client()
+                    if db_save:
+                        if save_profile_cloud(db_save, profile_name.strip(), profile_data):
+                            action = "Updated" if update_btn else "Saved"
+                            st.success(f"✅ Profile '{profile_name.strip()}' {action}! ({len(profile_data)} fields)")
+                        else:
+                            profiles_local = load_json(PROFILES_FILE)
+                            profiles_local[profile_name.strip()] = profile_data
+                            save_json(PROFILES_FILE, profiles_local)
+                            st.warning("⚠️ Cloud failed — saved locally")
                     else:
                         profiles_local = load_json(PROFILES_FILE)
                         profiles_local[profile_name.strip()] = profile_data
                         save_json(PROFILES_FILE, profiles_local)
-                        st.warning("⚠️ Cloud failed — saved locally")
-                else:
-                    profiles_local = load_json(PROFILES_FILE)
-                    profiles_local[profile_name.strip()] = profile_data
-                    save_json(PROFILES_FILE, profiles_local)
-                    st.success(f"✅ Profile '{profile_name.strip()}' saved locally!")
+                        st.success(f"✅ Profile '{profile_name.strip()}' saved locally!")
             else:
                 st.error("Profile name daalo")
 
