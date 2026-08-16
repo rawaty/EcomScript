@@ -1,6 +1,7 @@
-streamlit
-pandas
-openpyxl
-google-genai
-python-dotenv
-supabase
+# Pin major versions for reproducible local setups
+streamlit>=1.40,<2
+pandas>=2.2,<4
+openpyxl>=3.1,<4
+google-genai>=1.0,<3
+python-dotenv>=1.0,<2
+supabase>=2.0,<3

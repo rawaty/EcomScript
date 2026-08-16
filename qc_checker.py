@@ -1,206 +1,255 @@
 """
-Meesho QC Pre-Check Module
-Validates generated data BEFORE upload to catch errors early.
+Platform QC Pre-Check Module
+Validates generated data BEFORE upload. Meesho and Flipkart aware.
 """
 
-# Meesho restricted/warning keywords
-RESTRICTED_KEYWORDS = [
-    'comfort', 'comfortable', 'EVA', 'everyday', 'daily wear',
-    'best quality', 'premium quality', 'high quality', 'top quality',
-    'Amazon', 'Flipkart', 'Myntra', 'Ajio', 'elegant',
-]
+from platform_config import (
+    MEESHO_RESTRICTED_KEYWORDS,
+    FLIPKART_RESTRICTED_KEYWORDS,
+)
+
+# Back-compat export
+RESTRICTED_KEYWORDS = MEESHO_RESTRICTED_KEYWORDS
 
 WARNING_KEYWORDS = [
-    'Premium', 'Exclusive', 'Designer', 'Luxury',
+    "Premium", "Exclusive", "Designer", "Luxury",
 ]
 
 
-def run_qc_check(rows, col_map, dropdowns=None):
+def _f(fields, role, default=None):
+    if fields and role in fields:
+        return fields[role]
+    return default
+
+
+def run_qc_check(rows, col_map, dropdowns=None, platform="Meesho", fields=None):
     """
-    Run Meesho QC checks on generated rows.
-    Returns: list of dicts with {row, field, error_type, message}
+    Run platform QC checks on generated rows.
+    fields: dict of role -> concrete header name from resolve_fields().
+    Returns: (errors, warnings)
     """
     errors = []
     warnings = []
+    fields = fields or {}
+
+    product_name = _f(fields, "product_name", "Product Name")
+    variation = _f(fields, "variation", "Variation" if platform == "Meesho" else "Size")
+    sku = _f(fields, "sku", "SKU ID" if platform == "Meesho" else "Seller SKU ID")
+    style_id = _f(
+        fields, "style_id",
+        "Product ID / Style ID" if platform == "Meesho" else "Group ID / Style Code",
+    )
+    group_id = _f(fields, "group_id", "Group ID")
+    brand = _f(fields, "brand", "Brand Name" if platform == "Meesho" else "Brand")
+    description = _f(
+        fields, "description",
+        "Product Description" if platform == "Meesho" else "Key Features",
+    )
+    price = _f(fields, "price", "Meesho Price" if platform == "Meesho" else "Selling Price")
+    wd_price = _f(fields, "wd_price", "Wrong/Defective Returns Price")
+    mrp = _f(fields, "mrp", "MRP")
+    image_fields = [
+        _f(fields, "image1"),
+        _f(fields, "image2"),
+        _f(fields, "image3"),
+        _f(fields, "image4"),
+    ]
+    image_fields = [i for i in image_fields if i]
 
     if not rows:
-        errors.append({"row": 0, "field": "-", "error_type": "CRITICAL",
-                       "message": "No rows generated"})
+        errors.append({
+            "row": 0, "field": "-", "error_type": "CRITICAL",
+            "message": "No rows generated",
+        })
         return errors, warnings
 
-    # Group rows by Group ID
     groups = {}
     for i, row in enumerate(rows):
-        gid = row.get('Group ID', '?')
-        if gid not in groups:
-            groups[gid] = []
-        groups[gid].append((i, row))
+        gid = row.get(group_id, row.get(style_id, "?"))
+        groups.setdefault(gid, []).append((i, row))
 
-    # ─── Check 1: Same Product Name within Group ──────────────────────
     for gid, group_rows in groups.items():
-        names = set(r.get('Product Name', '') for _, r in group_rows)
+        names = set(r.get(product_name, "") for _, r in group_rows)
         if len(names) > 1:
             errors.append({
                 "row": group_rows[0][0] + 1,
-                "field": "Product Name",
+                "field": product_name,
                 "error_type": "ERROR",
-                "message": f"Group {gid}: Different Product Names in same group ({len(names)} unique)"
+                "message": (
+                    f"Group {gid}: Different product names in same group "
+                    f"({len(names)} unique)"
+                ),
             })
 
-    # ─── Check 2: Unique Variation within Group ───────────────────────
     for gid, group_rows in groups.items():
-        variations = [r.get('Variation', '') for _, r in group_rows]
+        variations = [r.get(variation, "") for _, r in group_rows]
         if len(variations) != len(set(variations)):
             dupes = [v for v in set(variations) if variations.count(v) > 1]
             errors.append({
                 "row": group_rows[0][0] + 1,
-                "field": "Variation",
+                "field": variation,
                 "error_type": "ERROR",
-                "message": f"Group {gid}: Same variation repeated — {dupes}"
+                "message": f"Group {gid}: Same variation/size repeated — {dupes}",
             })
 
-    # ─── Check 3: Same Attributes within Group ────────────────────────
-    # Fields that must be identical within a group (except Variation, SKU, Style ID, Color)
-    VARIANT_FIELDS = {'Variation', 'SKU ID',
-                      'Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4'}
+    variant_fields = {variation, sku}
+    variant_fields.update(image_fields)
     for gid, group_rows in groups.items():
         if len(group_rows) < 2:
             continue
         base_row = group_rows[0][1]
         for idx, row in group_rows[1:]:
             for field in row:
-                if field in VARIANT_FIELDS:
+                if field in variant_fields:
                     continue
                 if row.get(field) != base_row.get(field):
                     errors.append({
                         "row": idx + 1,
                         "field": field,
                         "error_type": "ERROR",
-                        "message": f"Group {gid}: '{field}' differs between rows "
-                                   f"('{base_row.get(field)}' vs '{row.get(field)}')"
+                        "message": (
+                            f"Group {gid}: '{field}' differs between rows "
+                            f"('{base_row.get(field)}' vs '{row.get(field)}')"
+                        ),
                     })
-                    break  # One error per group is enough
+                    break
 
-    # ─── Check 4: Restricted Keywords in Product Name ─────────────────
+    banned = (
+        MEESHO_RESTRICTED_KEYWORDS if platform == "Meesho"
+        else FLIPKART_RESTRICTED_KEYWORDS
+    )
+    apply_keyword_qc = platform == "Meesho"
     for i, row in enumerate(rows):
-        name = row.get('Product Name', '')
-        for kw in RESTRICTED_KEYWORDS:
-            if kw.lower() in name.lower():
-                errors.append({
-                    "row": i + 1,
-                    "field": "Product Name",
-                    "error_type": "ERROR",
-                    "message": f"Restricted keyword '{kw}' found in title"
-                })
-        for kw in WARNING_KEYWORDS:
-            if kw.lower() in name.lower():
-                warnings.append({
-                    "row": i + 1,
-                    "field": "Product Name",
-                    "error_type": "WARNING",
-                    "message": f"Warning keyword '{kw}' in title — may flag on some categories"
-                })
-
-        # Check description too
-        desc = row.get('Product Description', '')
-        if desc:
-            for kw in RESTRICTED_KEYWORDS:
-                if kw.lower() in desc.lower():
+        name = row.get(product_name, "") or ""
+        if apply_keyword_qc:
+            for kw in banned:
+                if kw.lower() in name.lower():
                     errors.append({
                         "row": i + 1,
-                        "field": "Product Description",
+                        "field": product_name,
                         "error_type": "ERROR",
-                        "message": f"Restricted keyword '{kw}' found in description"
+                        "message": f"Restricted keyword '{kw}' found in title",
                     })
-                    break  # One error per row enough
+            for kw in WARNING_KEYWORDS:
+                if kw.lower() in name.lower():
+                    warnings.append({
+                        "row": i + 1,
+                        "field": product_name,
+                        "error_type": "WARNING",
+                        "message": (
+                            f"Warning keyword '{kw}' in title — "
+                            "may flag on some categories"
+                        ),
+                    })
+            desc = row.get(description, "") or ""
+            if desc:
+                for kw in banned:
+                    if kw.lower() in desc.lower():
+                        errors.append({
+                            "row": i + 1,
+                            "field": description,
+                            "error_type": "ERROR",
+                            "message": f"Restricted keyword '{kw}' found in description",
+                        })
+                        break
+        else:
+            for kw in banned:
+                if kw.lower() in name.lower():
+                    warnings.append({
+                        "row": i + 1,
+                        "field": product_name,
+                        "error_type": "WARNING",
+                        "message": f"Competitor/quality claim '{kw}' in title",
+                    })
 
-    # ─── Check 5: Price Rules ─────────────────────────────────────────
     for i, row in enumerate(rows):
-        mp = row.get('Meesho Price')
-        wrp = row.get('Wrong/Defective Returns Price')
-        mrp = row.get('MRP')
+        mp = row.get(price) if price else None
+        wrp = row.get(wd_price) if wd_price else None
+        mrp_val = row.get(mrp) if mrp else None
 
-        if mp and mrp:
+        if mp and mrp_val:
             try:
-                if float(mp) >= float(mrp):
+                if float(mp) >= float(mrp_val):
                     errors.append({
                         "row": i + 1,
-                        "field": "Meesho Price",
+                        "field": price,
                         "error_type": "ERROR",
-                        "message": f"Meesho Price (₹{mp}) must be less than MRP (₹{mrp})"
+                        "message": f"{price} (₹{mp}) must be less than MRP (₹{mrp_val})",
                     })
             except (ValueError, TypeError):
                 pass
 
-        if mp and wrp:
+        if platform == "Meesho" and mp and wrp:
             try:
                 if float(wrp) >= float(mp):
                     errors.append({
                         "row": i + 1,
-                        "field": "Wrong/Defective Returns Price",
+                        "field": wd_price,
                         "error_type": "ERROR",
-                        "message": f"W/D Price (₹{wrp}) must be less than Meesho Price (₹{mp})"
+                        "message": f"W/D Price (₹{wrp}) must be less than {price} (₹{mp})",
                     })
             except (ValueError, TypeError):
                 pass
 
-    # ─── Check 6: Missing Compulsory Fields ───────────────────────────
-    CRITICAL_FIELDS = ['Product Name', 'Variation', 'Brand Name', 'Image 1 (Front)']
+    critical = [product_name, variation, brand]
+    if image_fields:
+        critical.append(image_fields[0])
+    if sku:
+        critical.append(sku)
     for i, row in enumerate(rows):
-        for field in CRITICAL_FIELDS:
-            if field in col_map and not row.get(field):
+        for field in critical:
+            if field and field in col_map and not row.get(field):
                 errors.append({
                     "row": i + 1,
                     "field": field,
                     "error_type": "ERROR",
-                    "message": f"Required field '{field}' is empty"
+                    "message": f"Required field '{field}' is empty",
                 })
 
-    # ─── Check 7: Dropdown Validation ─────────────────────────────────
     if dropdowns:
         for i, row in enumerate(rows):
             for field, valid_values in dropdowns.items():
                 if field in row and row[field]:
                     val = str(row[field]).strip()
-                    if val and val not in valid_values:
-                        # Only warn for first occurrence
-                        if i == 0:
-                            warnings.append({
-                                "row": i + 1,
-                                "field": field,
-                                "error_type": "WARNING",
-                                "message": f"'{val}' not in template dropdown for '{field}'"
-                            })
+                    if val and val not in valid_values and i == 0:
+                        warnings.append({
+                            "row": i + 1,
+                            "field": field,
+                            "error_type": "WARNING",
+                            "message": f"'{val}' not in template dropdown for '{field}'",
+                        })
 
-    # ─── Check 8: Image URL Format ────────────────────────────────────
     for i, row in enumerate(rows):
-        for img_field in ['Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4']:
-            url = row.get(img_field, '')
-            if url:
-                if 'drive.google.com' in url:
-                    errors.append({
-                        "row": i + 1,
-                        "field": img_field,
-                        "error_type": "ERROR",
-                        "message": "Google Drive links not allowed — use Meesho image uploader"
-                    })
-                elif not url.startswith('http'):
-                    errors.append({
-                        "row": i + 1,
-                        "field": img_field,
-                        "error_type": "ERROR",
-                        "message": f"Invalid image URL format"
-                    })
+        for img_field in image_fields:
+            url = row.get(img_field, "")
+            if not url:
+                continue
+            if platform == "Meesho" and "drive.google.com" in url:
+                errors.append({
+                    "row": i + 1,
+                    "field": img_field,
+                    "error_type": "ERROR",
+                    "message": "Google Drive links not allowed — use Meesho image uploader",
+                })
+            elif not str(url).startswith("http"):
+                errors.append({
+                    "row": i + 1,
+                    "field": img_field,
+                    "error_type": "ERROR",
+                    "message": "Invalid image URL format",
+                })
 
-    # ─── Check 9: Product Name length ─────────────────────────────────
     for i, row in enumerate(rows):
-        name = row.get('Product Name', '')
+        name = row.get(product_name, "") or ""
         if len(name) > 200:
             warnings.append({
                 "row": i + 1,
-                "field": "Product Name",
+                "field": product_name,
                 "error_type": "WARNING",
-                "message": f"Title too long ({len(name)} chars) — keep under 100 for best results"
+                "message": (
+                    f"Title too long ({len(name)} chars) — "
+                    "keep under 100 for best results"
+                ),
             })
 
     return errors, warnings

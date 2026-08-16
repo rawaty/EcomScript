@@ -89,29 +89,44 @@ def check_duplicates(client, style_ids=None, sku_ids=None, image_urls=None):
     return result
 
 
-def save_listings(client, rows, catalog_name=""):
+def save_listings(client, rows, catalog_name="", fields=None):
     """
     Save generated listings to database for future duplicate checking.
+    fields: optional role -> header map from resolve_fields().
     """
     if not client:
         return False
 
+    fields = fields or {}
+    style_key = fields.get("style_id", "Product ID / Style ID")
+    sku_key = fields.get("sku", "SKU ID")
+    name_key = fields.get("product_name", "Product Name")
+    brand_key = fields.get("brand", "Brand Name")
+    color_key = fields.get("color", "Color")
+    image_keys = [
+        fields.get("image1", "Image 1 (Front)"),
+        fields.get("image2", "Image 2"),
+        fields.get("image3", "Image 3"),
+        fields.get("image4", "Image 4"),
+    ]
+
     try:
         records = []
         for row in rows:
-            # Collect all image URLs for this row
             imgs = []
-            for img_field in ['Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4']:
+            for img_field in image_keys:
+                if not img_field:
+                    continue
                 url = row.get(img_field, '')
                 if url:
                     imgs.append(url)
 
             records.append({
-                "style_id": row.get("Product ID / Style ID", ""),
-                "sku_id": row.get("SKU ID", ""),
-                "product_name": row.get("Product Name", ""),
-                "brand": row.get("Brand Name", ""),
-                "color": row.get("Color", ""),
+                "style_id": row.get(style_key, ""),
+                "sku_id": row.get(sku_key, ""),
+                "product_name": row.get(name_key, ""),
+                "brand": row.get(brand_key, ""),
+                "color": row.get(color_key, ""),
                 "category": row.get("Generic Name", ""),
                 "image_urls": imgs,
                 "catalog_name": catalog_name,
