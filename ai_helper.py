@@ -179,7 +179,8 @@ Return ONLY valid JSON, no extra text."""
             contents=[
                 {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}},
                 prompt
-            ]
+            ],
+            config={"http_options": {"timeout": 30000}}  # 30 sec timeout
         )
         text = response.text.strip()
         if text.startswith("```"):

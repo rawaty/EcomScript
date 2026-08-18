@@ -338,26 +338,26 @@ def main():
             if analysis:
                 st.success("✅ AI detected product details!")
                 st.json(analysis)
-                # Auto-fill session state with detected values
-                if analysis.get('color'):
+                # Auto-fill session state ONLY if not already set by user
+                if analysis.get('color') and 'ai_color' not in st.session_state:
                     st.session_state['ai_color'] = analysis['color']
-                if analysis.get('fabric'):
+                if analysis.get('fabric') and f'f_Fabric' not in st.session_state:
                     st.session_state[f'f_Fabric'] = analysis['fabric']
-                if analysis.get('pattern'):
+                if analysis.get('pattern') and f'f_Pattern' not in st.session_state:
                     st.session_state[f'f_Pattern'] = analysis['pattern']
-                if analysis.get('occasion'):
+                if analysis.get('occasion') and f'f_Occasion' not in st.session_state:
                     st.session_state[f'f_Occasion'] = analysis['occasion']
-                if analysis.get('category'):
+                if analysis.get('category') and 'ai_category' not in st.session_state:
                     st.session_state['ai_category'] = analysis['category']
                 if analysis.get('description'):
                     desc_text = analysis['description']
-                    # Remove restricted keywords from AI description
                     for kw in RESTRICTED_KEYWORDS:
                         desc_text = re.sub(r'\b' + re.escape(kw) + r'\b', '', desc_text, flags=re.IGNORECASE)
                     desc_text = re.sub(r'\s+', ' ', desc_text).strip()
-                    st.session_state['ai_description'] = desc_text
-                    st.session_state['f_Product Description'] = desc_text
-                if analysis.get('title_suggestion'):
+                    if 'ai_description' not in st.session_state:
+                        st.session_state['ai_description'] = desc_text
+                        st.session_state['f_Product Description'] = desc_text
+                if analysis.get('title_suggestion') and 'ai_title' not in st.session_state:
                     st.session_state['ai_title'] = analysis['title_suggestion']
                 st.session_state['ai_analysis_done'] = True
                 st.rerun()  # Rerun to apply values to form
@@ -400,15 +400,24 @@ def main():
         selected_preset = st.selectbox("Load Preset", ["-- None --"] + list(all_presets.keys()),
                                        key="preset_select")
 
-    # Apply prefills
+    # Apply prefills ONLY when selection changes (not on every rerun)
     if selected_profile != "-- None --" and selected_profile in profiles:
-        for k, v in profiles[selected_profile].items():
-            if k not in PROGRAMMATIC_FIELDS:
-                st.session_state[f"f_{k}"] = v
+        if st.session_state.get('_last_profile') != selected_profile:
+            for k, v in profiles[selected_profile].items():
+                if k not in PROGRAMMATIC_FIELDS:
+                    st.session_state[f"f_{k}"] = v
+            st.session_state['_last_profile'] = selected_profile
+    elif selected_profile == "-- None --":
+        st.session_state.pop('_last_profile', None)
+
     if selected_preset != "-- None --" and selected_preset in all_presets:
-        for k, v in all_presets[selected_preset].items():
-            if k not in PROGRAMMATIC_FIELDS:
-                st.session_state[f"f_{k}"] = v
+        if st.session_state.get('_last_preset') != selected_preset:
+            for k, v in all_presets[selected_preset].items():
+                if k not in PROGRAMMATIC_FIELDS:
+                    st.session_state[f"f_{k}"] = v
+            st.session_state['_last_preset'] = selected_preset
+    elif selected_preset == "-- None --":
+        st.session_state.pop('_last_preset', None)
 
     # Clean stale programmatic keys
     for stale in [f"f_{f}" for f in PROGRAMMATIC_FIELDS]:
@@ -638,8 +647,13 @@ def main():
                     color_titles[color] = ai_titles.get(color, "")
         for color in colors:
             if not color_titles.get(color):
-                color_titles[color] = gen_title(brand.strip(), cat_name, color,
-                    occasion=str(fv.get('Occasion', '')), audience=audience)
+                # Use AI image analysis title if available
+                ai_title = st.session_state.get('ai_title', '')
+                if ai_title and len(colors) == 1:
+                    color_titles[color] = ai_title
+                else:
+                    color_titles[color] = gen_title(brand.strip(), cat_name, color,
+                        occasion=str(fv.get('Occasion', '')), audience=audience)
 
         # Generate rows
         catalog_row_count = 0
