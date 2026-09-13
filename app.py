@@ -279,6 +279,18 @@ def inject_data(wb, rows):
 
 def main():
     st.set_page_config(page_title="Bulk Listing Generator", layout="wide")
+
+    tab_gen, tab_dash = st.tabs(["🛒 Listing Generator", "📊 Dashboard"])
+
+    with tab_dash:
+        from meesho_dashboard import render_dashboard
+        render_dashboard()
+
+    with tab_gen:
+        run_generator()
+
+
+def run_generator():
     st.title("🛒 Bulk Listing Generator (Meesho + Flipkart)")
     st.caption("Template upload → Dynamic form → Bulk fill → QC Check → Download")
 
