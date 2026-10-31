@@ -1,3 +1,8 @@
 .env
-meesho_snapshots/
 __pycache__/
+
+# Meesho GST / sales data (private business data — never commit)
+tcs_sales.xlsx
+tcs_sales_return.xlsx
+*.tcs.xlsx
+gstr1_data.xlsx

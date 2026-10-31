@@ -279,15 +279,106 @@ def inject_data(wb, rows):
 
 def main():
     st.set_page_config(page_title="Bulk Listing Generator", layout="wide")
-
-    tab_gen, tab_dash = st.tabs(["🛒 Listing Generator", "📊 Dashboard"])
-
-    with tab_dash:
-        from meesho_dashboard import render_dashboard
-        render_dashboard()
-
-    with tab_gen:
+    tab_listing, tab_gst = st.tabs(["🛒 Listing Generator", "🧾 GST Returns (GSTR-1)"])
+    with tab_listing:
         run_generator()
+    with tab_gst:
+        run_gst_returns()
+
+
+def run_gst_returns():
+    """Meesho TCS reports se GSTR-1 ka data taiyaar karo (B2C + HSN + summary)."""
+    import gst_helper as gst
+
+    st.title("🧾 GST Returns — GSTR-1 Helper")
+    st.caption("Meesho TCS reports upload karo → B2C + HSN + tax summary → Excel download")
+
+    st.info(
+        "ℹ️ Ye tool aapka GSTR-1 ka **hisaab aur data** taiyaar karta hai. "
+        "Final filing GST portal pe OTP/DSC ke saath aapko khud karni hogi. "
+        "Meesho panel se **TCS Sales** aur **TCS Sales Return** reports download karke yahan upload karo."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sales_file = st.file_uploader("📤 TCS Sales report (.xlsx)", type=["xlsx"], key="gst_sales")
+    with c2:
+        return_file = st.file_uploader("↩️ TCS Sales Return report (.xlsx) — optional",
+                                       type=["xlsx"], key="gst_return")
+
+    if not sales_file:
+        st.warning("👆 Pehle TCS Sales report upload karo.")
+        return
+
+    try:
+        result = gst.process(sales_file, return_file)
+    except gst.GSTError as e:
+        st.error(f"❌ {e}")
+        return
+    except Exception as e:
+        st.error(f"❌ File padhne mein dikkat: {e}")
+        return
+
+    s = result["summary"]
+
+    st.markdown("### 📊 Summary")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Net Orders", s["orders_net"], help=f"{s['sales_rows']} sales − {s['return_rows']} returns")
+    m2.metric("Total Taxable", f"₹{s['total_taxable']:,.2f}")
+    m3.metric("Total Tax", f"₹{s['total_tax']:,.2f}")
+    m4.metric("Invoice Value", f"₹{s['invoice_value']:,.2f}")
+
+    t1, t2, t3 = st.columns(3)
+    t1.metric("IGST (inter-state)", f"₹{s['igst']:,.2f}")
+    t2.metric("CGST (intra-state)", f"₹{s['cgst']:,.2f}")
+    t3.metric("SGST (intra-state)", f"₹{s['sgst']:,.2f}")
+
+    st.caption(f"Aapka state code (GSTIN se): **{result['supplier_cd']}** — "
+               "isi state ke andar wali sales intra-state (CGST+SGST), baaki inter-state (IGST).")
+
+    st.markdown("### 7 — B2C (Others): State × Rate wise")
+    st.dataframe(result["b2c"], use_container_width=True, hide_index=True)
+
+    st.markdown("### 12 — HSN-wise Summary")
+    st.dataframe(result["hsn"], use_container_width=True, hide_index=True)
+
+    st.markdown("### 13 — Documents Issued")
+    d = result["docs"]
+    dc1, dc2, dc3 = st.columns(3)
+    dc1.metric("Invoices Issued", d["invoices_issued"],
+               help="Table 13 mein yahi number jaata hai (unique invoices)")
+    dc2.metric("Credit Notes (Returns)", d["credit_notes"],
+               help="Returns = credit notes → Table 9B mein jaate hain")
+    dc3.metric("Net Documents", d["net_documents"])
+
+    with st.expander("🔍 Documents breakdown (detail dekho)"):
+        st.write(f"- **Invoices issued (Table 13):** {d['invoices_issued']}")
+        st.write(f"    - Active invoices (asli bikri, net qty > 0): {d['active_invoices']}")
+        st.write(f"    - Fully adjusted/cancelled (net qty = 0): {d['fully_adjusted']}")
+        st.write(f"- **Credit notes / returns (Table 9B):** {d['credit_notes']}")
+        st.write(f"- (info) Total sale line-rows in file: {d['invoice_line_rows']}")
+        st.write(f"- (info) Price-adjustment rows (qty = 0, same invoice): {d['adjustment_rows']}")
+        st.caption(
+            "Dhyaan: ek invoice ki do line ho sakti hain (sale + adjustment). "
+            "Isliye 'line rows' se invoice count kam hota hai — ye normal hai. "
+            "Table 13 mein **unique invoices** (upar wala) daalo, line-rows nahi."
+        )
+
+    st.caption(
+        "ℹ️ Box 13 mein **Invoices Issued** daalo. Returns **9B - Credit Notes** "
+        "mein jaate hain, cancelled invoice mein nahi. Confusion ho to CA se confirm karo."
+    )
+
+    st.markdown("---")
+    xlsx = gst.to_excel_bytes(result)
+    st.download_button(
+        "📥 Download GSTR-1 data (Excel)",
+        data=xlsx,
+        file_name="gstr1_data.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    st.caption("Is Excel ki values GST portal ke B2C (Others) aur HSN summary boxes mein daal do, "
+               "ya apne CA ko bhej do.")
 
 
 def run_generator():

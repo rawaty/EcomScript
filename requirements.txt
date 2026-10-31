@@ -4,4 +4,3 @@ openpyxl
 google-genai
 python-dotenv
 supabase
-requests
