@@ -3,6 +3,8 @@ Meesho QC Pre-Check Module
 Validates generated data BEFORE upload to catch errors early.
 """
 
+import re
+
 # Meesho restricted/warning keywords
 RESTRICTED_KEYWORDS = [
     'comfort', 'comfortable', 'EVA', 'everyday', 'daily wear',
@@ -62,7 +64,8 @@ def run_qc_check(rows, col_map, dropdowns=None):
     # ─── Check 3: Same Attributes within Group ────────────────────────
     # Fields that must be identical within a group (except Variation, SKU, Style ID, Color)
     VARIANT_FIELDS = {'Variation', 'SKU ID',
-                      'Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4'}
+                      'Image 1 (Front)', 'Image 2', 'Image 3', 'Image 4',
+                      'Foot Length Size', 'Foot Width Size'}  # size-dependent
     for gid, group_rows in groups.items():
         if len(group_rows) < 2:
             continue
@@ -202,5 +205,28 @@ def run_qc_check(rows, col_map, dropdowns=None):
                 "error_type": "WARNING",
                 "message": f"Title too long ({len(name)} chars) — keep under 100 for best results"
             })
+
+    # ─── Check 10: Foot Length should not shrink as IND size grows ────
+    reported = set()
+    for gid, group_rows in groups.items():
+        pts = []
+        for idx, r in group_rows:
+            m = re.fullmatch(r'IND-(\d+)', str(r.get('Variation', '')).strip())
+            try:
+                foot = float(r.get('Foot Length Size'))
+            except (TypeError, ValueError):
+                continue
+            if m:
+                pts.append((int(m.group(1)), foot, idx))
+        pts.sort()
+        for (a, fa, _), (b, fb, idx_b) in zip(pts, pts[1:]):
+            if fb < fa and (a, b) not in reported:
+                reported.add((a, b))
+                warnings.append({
+                    "row": idx_b + 1,
+                    "field": "Foot Length Size",
+                    "error_type": "WARNING",
+                    "message": f"IND-{b} foot length ({fb} cm) is smaller than IND-{a} ({fa} cm) — check size chart"
+                })
 
     return errors, warnings

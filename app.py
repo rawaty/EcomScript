@@ -60,8 +60,9 @@ NUMERIC_FIELDS = {
 }
 
 FOOT_LENGTH_MAP = {
-    'IND-2': '21', 'IND-3': '21.5', 'IND-4': '22', 'IND-5': '23',
-    'IND-6': '25.5', 'IND-7': '26.5', 'IND-8': '27.5', 'IND-9': '28.5',
+    # IND-5..8 from the supplier's women's slipper chart (IND = UK size)
+    'IND-2': '21', 'IND-3': '21.5', 'IND-4': '22', 'IND-5': '23.5',
+    'IND-6': '24', 'IND-7': '25', 'IND-8': '25.5', 'IND-9': '28.5',
     'IND-10': '28', 'IND-11': '29', 'IND-12': '30', 'IND-13': '30',
 }
 FOOT_WIDTH_MAP = {
@@ -89,6 +90,10 @@ DEFAULT_PRESETS = {
         "Pattern": "Printed", "Net Weight (gms)": "300",
         "GST %": "5", "HSN ID": "6111", "Net Quantity (N)": "1",
         "Stitch Type": "Stitched",
+    },
+    "Sliders (Women)": {
+        "Generic Name": "Sliders", "Type": "Sliders",
+        "Net Quantity (N)": "1", "GST %": "5", "HSN ID": "64022090",
     },
     "Sliders (Men)": {
         "Generic Name": "Sliders", "Material": "Synthetic", "Sole Material": "Rubber",
@@ -226,7 +231,33 @@ def get_dropdowns(wb, col_map):
 def gen_sku(base, i):
     return f"{base}_{''.join(random.choices(string.ascii_uppercase + string.digits, k=4))}{i + 1}"
 
-def gen_title(brand, cat, color, occasion="", audience="for Kids"):
+FOOTWEAR_WORDS = ('slider', 'slide', 'slipper', 'flip flop', 'flipflop',
+                  'flip-flop', 'sandal', 'chappal', 'footwear')
+# Conservative defaults. Override with the "Title features" form field,
+# and only list features that are true for your product.
+DEFAULT_FOOTWEAR_FEATURES = ["Lightweight", "Soft Sole"]
+
+
+def is_footwear(cat):
+    c = (cat or "").lower()
+    return any(w in c for w in FOOTWEAR_WORDS)
+
+
+def _clean_title(t):
+    for kw in RESTRICTED_KEYWORDS:
+        t = re.sub(r'\b' + re.escape(kw) + r'\b', '', t, flags=re.IGNORECASE)
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+def gen_footwear_title(brand, cat, color, audience="for Kids", features=None):
+    """Title for sliders/slippers: brand + color + type + audience + features + usage."""
+    feats = [f.strip() for f in (features or DEFAULT_FOOTWEAR_FEATURES) if f and f.strip()][:3]
+    return _clean_title(f"{brand} {color} {cat} {audience} {' '.join(feats)} Indoor & Outdoor")
+
+
+def gen_title(brand, cat, color, occasion="", audience="for Kids", features=None):
+    if is_footwear(cat):
+        return gen_footwear_title(brand, cat, color, audience, features)
     adj = random.choice(SEO_ADJECTIVES)
     feat = random.choice(SEO_FEATURES)
     if occasion and occasion.strip():
@@ -244,9 +275,7 @@ def gen_title(brand, cat, color, occasion="", audience="for Kids"):
         f"{adj} {brand} {color} {cat} {occ} {feat} {audience}",
         f"{brand} {color} {cat} {adj} {feat} {audience} {occ}",
     ])
-    for kw in RESTRICTED_KEYWORDS:
-        t = re.sub(r'\b' + re.escape(kw) + r'\b', '', t, flags=re.IGNORECASE)
-    return re.sub(r'\s+', ' ', t).strip()
+    return _clean_title(t)
 
 def vary_price(base, variation):
     if variation <= 0:
@@ -549,7 +578,7 @@ def run_generator():
                 colors_raw = st.text_input("Colors *",
                     value=st.session_state.get('ai_color', ''),
                     placeholder="Black, Blue, Red")
-            brand = st.text_input("Brand Name *", placeholder="kidoready")
+            brand = st.text_input("Brand Name *", placeholder="parivarchoice")
             category = st.text_input("Product Category *",
                 value=st.session_state.get('ai_category', ''),
                 placeholder="Kurtis & Kurtas")
@@ -563,6 +592,11 @@ def run_generator():
             audience = st.selectbox("Target Audience *",
                 ["for Boys", "for Girls", "for Kids", "for Baby Boys",
                  "for Baby Girls", "for Men", "for Women", "Unisex"])
+            title_features = st.text_input(
+                "Title features (footwear only, optional)",
+                placeholder="Lightweight, Soft Sole",
+                help="Sliders/slippers ke title me aayenge (max 3). Sirf wahi likho jo product me sach ho. "
+                     "Khali chhodo to Lightweight, Soft Sole use hoga.")
 
         # ─── AI SETTINGS ─────────────────────────────────────────────────
         st.markdown("### 🤖 AI & Database")
@@ -756,7 +790,8 @@ def run_generator():
                     color_titles[color] = ai_title
                 else:
                     color_titles[color] = gen_title(brand.strip(), cat_name, color,
-                        occasion=str(fv.get('Occasion', '')), audience=audience)
+                        occasion=str(fv.get('Occasion', '')), audience=audience,
+                        features=parse_csv(title_features) or None)
 
         # Generate rows
         catalog_row_count = 0
@@ -901,6 +936,17 @@ def run_generator():
     df = pd.DataFrame(rows)
     prev_cols = ['Product Name', VARIATION_FIELD, 'Product ID / Style ID', 'Group ID', 'Color']
     st.dataframe(df[[c for c in prev_cols if c in df.columns]].head(20), use_container_width=True)
+
+    # ─── VISIBILITY TIPS ──────────────────────────────────────────────────
+    with st.expander("📈 Visibility tips (Meesho search data se)"):
+        tips = []
+        if len(colors) < 2:
+            tips.append("Sirf 1 color/design hai. 'sliders for women' ke 20 results me 13 me 2+ designs the.")
+        tips.append("Supplier panel me dispatch 1 din rakho. Us search me 'Dispatch: 1 Day' wali sab 13 listings par NEXT DAY DISPATCH tag tha.")
+        tips.append("Rating 4.0 ke upar rakho. 20 me se 17 listings 4.0+ thi, sabse kam 3.8.")
+        tips.append("Size chart / foot length sahi bharo. Galat size se return aur kam rating aati hai.")
+        for t in tips:
+            st.markdown(f"- {t}")
 
     # ─── SAVE TO DATABASE ─────────────────────────────────────────────────
     if db_client and not qc_errors:
