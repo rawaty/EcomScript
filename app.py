@@ -16,7 +16,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from ai_helper import ai_generate_titles, ai_generate_description, ai_suggest_fields
+from ai_helper import (ai_generate_titles, ai_generate_description, ai_suggest_fields,
+                       ai_market_summary)
+import insights
 from qc_checker import run_qc_check
 from database import (get_supabase_client, check_duplicates, save_listings,
                       get_listing_count, save_profile_cloud, load_profiles_cloud)
@@ -308,11 +310,150 @@ def inject_data(wb, rows):
 
 def main():
     st.set_page_config(page_title="Bulk Listing Generator", layout="wide")
-    tab_listing, tab_gst = st.tabs(["🛒 Listing Generator", "🧾 GST Returns (GSTR-1)"])
+    tab_listing, tab_market, tab_gst = st.tabs(
+        ["🛒 Listing Generator", "📊 Market Insights", "🧾 GST Returns (GSTR-1)"])
     with tab_listing:
         run_generator()
+    with tab_market:
+        run_market_insights()
     with tab_gst:
         run_gst_returns()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_market_labels():
+    return insights.list_labels()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_market_stats(label):
+    return insights.get_stats(label)
+
+
+def render_market_stats(stats):
+    """Show computed stats for one label."""
+    p = stats["price"]
+    st.caption(f"Based on {stats['n']} listings from {stats['snapshots']} snapshot(s). "
+               "Ye 'kya ranked dikh raha hai' ka pattern hai, ranking ka kaaran nahi.")
+    if stats["n"] < insights.MIN_LISTINGS_FOR_BAND:
+        st.warning(f"Sirf {stats['n']} listings hain. Price warning tab chalu hogi jab "
+                   f"{insights.MIN_LISTINGS_FOR_BAND}+ listings jama ho jayengi.")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Median price", f"₹{p['median']:.0f}", help="Listing price (offers se pehle)")
+    m2.metric("Typical band (p10-p90)", f"₹{p['p10']:.0f} - ₹{p['p90']:.0f}")
+    if stats["effective_price_median"]:
+        m3.metric("Median price after offers", f"₹{stats['effective_price_median']:.0f}")
+    r = stats["rating"]
+    if r["median"]:
+        m4.metric("Rating (median / lowest)", f"{r['median']} / {r['min']}",
+                  help=f"{r['share_4plus']}% listings ka rating 4.0 ya zyada")
+
+    d, dp = stats["designs"], stats["dispatch"]
+    lines = []
+    if d["share_2plus"] is not None:
+        lines.append(f"2+ designs wali listings: **{d['share_2plus']}%** (max {d['max']})")
+    if dp["one_day_n"]:
+        lines.append(f"'Dispatch: 1 Day' wali {dp['one_day_n']} listings me se "
+                     f"**{dp['one_day_tagged']}** par NEXT DAY DISPATCH tag")
+    lines.append(f"NEXT DAY DISPATCH tag wali listings: **{dp['tag_share']}%**")
+    lines.append(f"Pichle 12 mahine me bani listings: **{stats['new_share']}%**")
+    rc = stats["rating_count"]
+    if rc["share_under_1000"] is not None:
+        lines.append(f"1,000 se kam ratings wali listings: **{rc['share_under_1000']}%**")
+    for ln in lines:
+        st.markdown(f"- {ln}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Common title words**")
+        if stats["top_words"]:
+            st.dataframe(pd.DataFrame(stats["top_words"], columns=["word", "listings"]),
+                         hide_index=True, use_container_width=True)
+        else:
+            st.caption("Abhi koi word 2+ listings me nahi mila.")
+    with c2:
+        st.markdown("**Common phrases**")
+        if stats["top_phrases"]:
+            st.dataframe(pd.DataFrame(stats["top_phrases"], columns=["phrase", "listings"]),
+                         hide_index=True, use_container_width=True)
+        if stats["top_materials"]:
+            st.markdown("**Materials:** " + ", ".join(f"{m} ({c})" for m, c in stats["top_materials"]))
+
+
+def run_market_insights():
+    """Paste Meesho search/feed responses -> stored per label -> stats + Gemini advice."""
+    st.title("📊 Market Insights")
+    st.caption("Meesho search/feed ka response daalo. Har label ke saare responses jama hote hain "
+               "aur price band, title words, rating aur dispatch ka pattern banta hai.")
+    st.info("🔒 Sirf response JSON paste karo. Cookies, curl ya token mat paste karna. "
+            "App sirf public catalog fields (price, rating, title, etc.) save karta hai, raw response nahi.")
+
+    labels = cached_market_labels()
+    c1, c2 = st.columns(2)
+    with c1:
+        pick = st.selectbox("Existing label", ["-- New --"] + labels, key="mi_pick")
+    with c2:
+        new_label = st.text_input("Ya naya label", placeholder="girls sliders", key="mi_new")
+    label = insights.normalize_label(new_label) or (pick if pick != "-- New --" else "")
+
+    uploads = st.file_uploader("Response JSON file(s)", type=["json", "txt"],
+                               accept_multiple_files=True, key="mi_files")
+    pasted = st.text_area("Ya yahan paste karo", height=140, key="mi_paste")
+
+    if st.button("💾 Save snapshot", key="mi_save"):
+        if not label:
+            st.error("Pehle label chuno ya likho.")
+        else:
+            texts = [u.getvalue().decode("utf-8", errors="replace") for u in uploads]
+            if pasted.strip():
+                texts.append(pasted)
+            if not texts:
+                st.error("Koi file upload karo ya JSON paste karo.")
+            saved = 0
+            for t in texts:
+                try:
+                    listings = insights.parse_response(insights.parse_json_text(t))
+                    where = insights.save_snapshot(label, listings, source="manual")
+                    saved += 1
+                    st.success(f"✅ {len(listings)} listings '{label}' me save hui "
+                               f"({'Supabase' if where == 'cloud' else 'local file'}).")
+                    if where == "local":
+                        st.warning("Supabase me save nahi hua, isliye local file me rakha. "
+                                   "Supabase me table banao (niche SQL).")
+                        st.code(database_sql(), language="sql")
+                except insights.InsightsError as e:
+                    st.error(str(e))
+            if saved:
+                cached_market_labels.clear()
+                cached_market_stats.clear()
+
+    if not label:
+        st.caption("👆 Label chuno ya naya likho.")
+        return
+    stats = cached_market_stats(label)
+    st.markdown(f"### '{label}'")
+    if not stats:
+        st.caption("Is label me abhi koi data nahi hai.")
+        return
+    render_market_stats(stats)
+
+    st.markdown("### 🤖 Gemini advice")
+    if st.button("Advice banao", key="mi_ai"):
+        if not os.environ.get("GEMINI_API_KEY"):
+            st.error("GEMINI_API_KEY .env me nahi hai.")
+        else:
+            with st.spinner("Gemini soch raha hai..."):
+                advice = ai_market_summary(label, stats)
+            if advice:
+                st.markdown(advice)
+            else:
+                st.warning("Gemini se jawab nahi aaya. Thodi der baad try karo.")
+
+
+def database_sql():
+    import database
+    return database.MARKET_SNAPSHOTS_SQL.strip()
 
 
 def run_gst_returns():
@@ -560,6 +701,28 @@ def run_generator():
             del st.session_state[k]
         st.rerun()
 
+    # ─── MARKET INSIGHTS (optional) ───────────────────────────────────────
+    market_label, market_stats, market_band, market_words = "", None, None, []
+    labels = cached_market_labels()
+    if labels:
+        pick = st.selectbox("📊 Market insights (optional)", ["-- None --"] + labels,
+                            key="market_label_pick",
+                            help="Market Insights tab me jama data se price warning aur title words milenge.")
+        if pick != "-- None --":
+            market_label = pick
+            market_stats = cached_market_stats(pick)
+            if market_stats:
+                market_band = insights.get_price_band(market_stats)
+                if market_band:
+                    market_band["label"] = pick
+                market_words = insights.suggested_title_words(market_stats, RESTRICTED_KEYWORDS)
+                pr = market_stats["price"]
+                st.caption(f"'{pick}' ({market_stats['n']} listings): price band "
+                           f"₹{pr['p10']:.0f}-₹{pr['p90']:.0f}, median ₹{pr['median']:.0f}. "
+                           + (f"Common title words: {', '.join(market_words)}." if market_words else ""))
+    else:
+        st.caption("📊 Market Insights tab me response daalo, to yahan price band aur title words dikhenge.")
+
     # ─── MAIN FORM ────────────────────────────────────────────────────────
     with st.form("main_form"):
         st.markdown("### 🎨 Core Settings")
@@ -778,7 +941,8 @@ def run_generator():
         if use_ai_titles and gemini_key:
             os.environ["GEMINI_API_KEY"] = gemini_key
             ai_titles = ai_generate_titles(brand.strip(), cat_name, colors,
-                str(fv.get('Occasion', 'Casual Wear')), audience)
+                str(fv.get('Occasion', 'Casual Wear')), audience,
+                market_words=market_words or None)
             if ai_titles:
                 for color in colors:
                     color_titles[color] = ai_titles.get(color, "")
@@ -876,7 +1040,7 @@ def run_generator():
                 break
 
     # ─── QC CHECK ─────────────────────────────────────────────────────────
-    qc_errors, qc_warnings = run_qc_check(rows, col_map, dropdowns)
+    qc_errors, qc_warnings = run_qc_check(rows, col_map, dropdowns, market=market_band)
 
     if qc_errors:
         st.error(f"❌ QC FAILED — {len(qc_errors)} error(s):")
@@ -940,10 +1104,25 @@ def run_generator():
     # ─── VISIBILITY TIPS ──────────────────────────────────────────────────
     with st.expander("📈 Visibility tips (Meesho search data se)"):
         tips = []
-        if len(colors) < 2:
-            tips.append("Sirf 1 color/design hai. 'sliders for women' ke 20 results me 13 me 2+ designs the.")
-        tips.append("Supplier panel me dispatch 1 din rakho. Us search me 'Dispatch: 1 Day' wali sab 13 listings par NEXT DAY DISPATCH tag tha.")
-        tips.append("Rating 4.0 ke upar rakho. 20 me se 17 listings 4.0+ thi, sabse kam 3.8.")
+        s = market_stats
+        if s and s["n"] >= insights.MIN_LISTINGS_FOR_BAND:
+            src = f"'{market_label}' ke {s['n']} listings"
+            if len(colors) < 2 and s["designs"]["share_2plus"] is not None:
+                tips.append(f"Sirf 1 color/design hai. {src} me {s['designs']['share_2plus']}% me 2+ designs thi.")
+            if s["dispatch"]["one_day_n"]:
+                tips.append(f"Supplier panel me dispatch 1 din rakho. {src} me 'Dispatch: 1 Day' wali "
+                            f"{s['dispatch']['one_day_n']} me se {s['dispatch']['one_day_tagged']} par "
+                            "NEXT DAY DISPATCH tag tha.")
+            r = s["rating"]
+            if r["min"]:
+                tips.append(f"Rating 4.0 ke upar rakho. {src} me {r['share_4plus']}% listings 4.0+ thi, "
+                            f"sabse kam {r['min']}.")
+        else:
+            if len(colors) < 2:
+                tips.append("Sirf 1 color/design hai. 'sliders for women' ke 20 results me 13 me 2+ designs the.")
+            tips.append("Supplier panel me dispatch 1 din rakho. 'sliders for women' search me 'Dispatch: 1 Day' wali sab 13 listings par NEXT DAY DISPATCH tag tha.")
+            tips.append("Rating 4.0 ke upar rakho. 20 me se 17 listings 4.0+ thi, sabse kam 3.8.")
+            tips.append("Market Insights tab me apni category ka data daalo, to ye tips us data se aayenge.")
         tips.append("Size chart / foot length sahi bharo. Galat size se return aur kam rating aati hai.")
         for t in tips:
             st.markdown(f"- {t}")

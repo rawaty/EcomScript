@@ -17,9 +17,11 @@ WARNING_KEYWORDS = [
 ]
 
 
-def run_qc_check(rows, col_map, dropdowns=None):
+def run_qc_check(rows, col_map, dropdowns=None, market=None):
     """
     Run Meesho QC checks on generated rows.
+    market: optional {"low", "high", "median", "n", "label"} price band from
+            Market Insights; adds a price warning (never an error).
     Returns: list of dicts with {row, field, error_type, message}
     """
     errors = []
@@ -228,5 +230,24 @@ def run_qc_check(rows, col_map, dropdowns=None):
                     "error_type": "WARNING",
                     "message": f"IND-{b} foot length ({fb} cm) is smaller than IND-{a} ({fa} cm) — check size chart"
                 })
+
+    # ─── Check 11: Price vs market band (warning only) ────────────────
+    if market:
+        prices = []
+        for row in rows:
+            try:
+                prices.append(float(row.get('Meesho Price')))
+            except (TypeError, ValueError):
+                pass
+        if prices:
+            lo, hi = min(prices), max(prices)
+            band = (f"{market.get('label', 'market')}: ₹{market['low']:.0f} to ₹{market['high']:.0f}, "
+                    f"median ₹{market['median']:.0f}, {market['n']} listings")
+            if hi > market['high']:
+                warnings.append({"row": 1, "field": "Meesho Price", "error_type": "WARNING",
+                                 "message": f"Price up to ₹{hi:.0f} is above the typical band ({band})"})
+            elif lo < market['low']:
+                warnings.append({"row": 1, "field": "Meesho Price", "error_type": "WARNING",
+                                 "message": f"Price down to ₹{lo:.0f} is below the typical band ({band})"})
 
     return errors, warnings

@@ -28,11 +28,20 @@ def get_client():
         return None
 
 
-def ai_generate_titles(brand, category, colors, occasion, audience, count=1):
-    """Generate Meesho-compliant SEO product titles. Returns dict: {color: title}"""
+def ai_generate_titles(brand, category, colors, occasion, audience, count=1,
+                       market_words=None):
+    """Generate Meesho-compliant SEO product titles. Returns dict: {color: title}.
+    market_words: common words from top search results (use only if true for the product)."""
     client = get_client()
     if not client:
         return None
+
+    market_hint = ""
+    if market_words:
+        market_hint = ("\nWords common in top search results for this category: "
+                       f"{', '.join(market_words)}. Use a word ONLY if it is a plain, "
+                       "factual description of this product type; skip anything that "
+                       "claims a feature we cannot verify.\n")
 
     prompt = f"""Generate {len(colors)} unique Meesho-compliant product titles.
 
@@ -41,7 +50,7 @@ Category: {category}
 Colors: {', '.join(colors)}
 Occasion: {occasion}
 Target Audience: {audience}
-
+{market_hint}
 STRICT RULES:
 1. NO restricted keywords: comfort, comfortable, EVA, everyday, daily wear, elegant, best quality, premium quality, high quality, Amazon, Flipkart, Myntra, Ajio
 2. Include the color name naturally in each title
@@ -63,6 +72,43 @@ No extra text, just the JSON."""
         return json.loads(text)
     except Exception as e:
         print(f"AI Title Error: {e}")
+        return None
+
+
+def ai_market_summary(label, stats):
+    """Short Hinglish advice for a new listing, based on computed market stats."""
+    client = get_client()
+    if not client or not stats:
+        return None
+
+    keep = {k: stats.get(k) for k in (
+        "n", "price", "effective_price_median", "rating", "rating_count",
+        "designs", "dispatch", "new_share", "top_words", "top_phrases",
+        "top_materials", "snapshots")}
+    prompt = f"""You advise a Meesho seller who is creating a new listing.
+Below are statistics computed from {stats['n']} listings that appeared in Meesho
+search/feed results for "{label}". They show what appears in results. They do NOT
+prove what causes ranking.
+
+STATS (JSON): {json.dumps(keep, ensure_ascii=False)}
+
+Write 5 to 6 short bullet points in Hinglish (Hindi in Roman script) with specific,
+actionable advice for the new listing: price range, rating level to protect,
+dispatch time, number of designs/colors, and title words.
+
+RULES:
+1. Use the numbers from the stats. Do not invent facts that are not in the stats.
+2. If n is below 10, say clearly that data is limited.
+3. Do not suggest claiming product features the seller cannot verify.
+4. Do not use these words: comfort, comfortable, EVA, daily wear, elegant,
+   best quality, premium quality, high quality.
+
+Return only the bullet points as plain text."""
+    try:
+        response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+        return response.text.strip()
+    except Exception as e:
+        print(f"AI Market Summary Error: {e}")
         return None
 
 

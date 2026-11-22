@@ -128,6 +128,62 @@ def save_listings(client, rows, catalog_name=""):
         return False
 
 
+MARKET_SNAPSHOTS_SQL = """
+CREATE TABLE IF NOT EXISTS market_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    label TEXT NOT NULL,
+    source TEXT,
+    listings JSONB NOT NULL,
+    listing_count INT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_market_label ON market_snapshots(label);
+"""
+
+
+# ─── MARKET INSIGHTS (Cloud) ──────────────────────────────────────────────
+
+def save_market_snapshot(client, label, listings, source=""):
+    """Save one parsed market response. Table: see MARKET_SNAPSHOTS_SQL."""
+    if not client:
+        return False
+    try:
+        client.table("market_snapshots").insert({
+            "label": label, "source": source,
+            "listings": listings, "listing_count": len(listings),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"Market snapshot save error: {e}")
+        return False
+
+
+def load_market_snapshots(client, label):
+    """Load all snapshots for a label as [{captured_at, source, listings}]."""
+    if not client:
+        return []
+    try:
+        resp = (client.table("market_snapshots")
+                .select("created_at, source, listings")
+                .eq("label", label).order("created_at").execute())
+        return [{"captured_at": r["created_at"], "source": r.get("source") or "",
+                 "listings": r["listings"]} for r in resp.data]
+    except Exception as e:
+        print(f"Market snapshot load error: {e}")
+        return []
+
+
+def list_market_labels(client):
+    """All distinct labels that have snapshots."""
+    if not client:
+        return []
+    try:
+        resp = client.table("market_snapshots").select("label").execute()
+        return sorted({r["label"] for r in resp.data})
+    except Exception:
+        return []
+
+
 def get_listing_count(client):
     """Get total number of saved listings."""
     if not client:
